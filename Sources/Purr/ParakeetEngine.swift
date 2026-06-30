@@ -257,15 +257,36 @@ final class ParakeetEngine: TranscriptionEngine {
     func transcribeDetailed(samples: [Float]) async throws -> ASRResult {
         if batchManager == nil { await warmup() }
         guard let manager = batchManager else { throw EngineError.notLoaded }
-        var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
         let started = Date()
-        let result = try await manager.transcribe(
-            samples, decoderState: &state, language: .english)
-        let elapsed = Date().timeIntervalSince(started)
-        log.info(
-            "Parakeet transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s"
-        )
-        return result
+
+        // Bound the CoreML inference so a stuck decode can never pin the HUD on
+        // "Transcribing" forever (issue #1: indefinite hang on the A18-class
+        // MacBook Neo, whose ANE/low-memory profile no M-series test machine
+        // shares - a Parakeet prediction there never returns). The budget is
+        // generous and audio-proportional: a real transcription runs many times
+        // faster than realtime, so this only ever trips on a genuine hang, never
+        // on slow-but-working work. The fresh decoder state is built inside the
+        // work closure to keep its `inout` off the concurrency boundary.
+        let audioSeconds = Double(samples.count) / 16_000
+        let budget: Duration = .seconds(45) + .seconds(audioSeconds * 5)
+        do {
+            let result = try await withTimeout(budget) {
+                var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+                return try await manager.transcribe(
+                    samples, decoderState: &state, language: .english)
+            }
+            let elapsed = Date().timeIntervalSince(started)
+            log.info(
+                "Parakeet transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s"
+            )
+            return result
+        } catch is TimedOutError {
+            let waited = Date().timeIntervalSince(started)
+            log.error(
+                "Parakeet transcription timed out after \(String(format: "%.1f", waited), privacy: .public)s for \(samples.count, privacy: .public) samples (\(String(format: "%.1f", audioSeconds), privacy: .public)s audio) - CoreML inference did not return. Aborting so the HUD can recover."
+            )
+            throw EngineError.transcriptionTimedOut
+        }
     }
 
     func makeStreamingSession() async throws -> any StreamingSession {

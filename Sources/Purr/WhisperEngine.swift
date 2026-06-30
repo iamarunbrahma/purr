@@ -99,6 +99,7 @@ enum EngineError: LocalizedError {
     case notLoaded
     case streamingNotSupported(engineName: String)
     case modelDirectoryMissing
+    case transcriptionTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -109,6 +110,9 @@ enum EngineError: LocalizedError {
                 "\(name) does not support real-time streaming. Switch the engine, or turn off Smart typing."
         case .modelDirectoryMissing:
             return "Model files are missing on disk. Open Settings → Engine to download."
+        case .transcriptionTimedOut:
+            return
+                "Transcription took too long and was stopped. If this keeps happening, switch to a Whisper model in Settings → Engine, or try a shorter recording."
         }
     }
 }
