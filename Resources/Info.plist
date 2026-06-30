@@ -20,6 +20,8 @@
     <string>Purr</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
     <key>CFBundleShortVersionString</key>
     <string>0.0.1</string>
     <key>CFBundleVersion</key>

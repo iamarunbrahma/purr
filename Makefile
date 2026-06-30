@@ -57,6 +57,10 @@ app:
 	@mkdir -p $(MACOS_DIR) $(RES_DIR) $(FRAMEWORKS_DIR)
 	@cp $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/$(APP_NAME) $(MACOS_DIR)/$(APP_NAME)
 	@cp $(INFO_PLIST) $(CONTENTS)/Info.plist
+	@# Legacy package-type marker that every standard .app carries; some macOS
+	@# subsystems still read it. Cheap to include, and a hand-assembled SwiftPM
+	@# bundle omits it by default.
+	@printf 'APPL????' > $(CONTENTS)/PkgInfo
 	@cp Resources/AppIcon.icns $(RES_DIR)/AppIcon.icns
 	@cp Resources/purr_menubar_glyph.pdf $(RES_DIR)/purr_menubar_glyph.pdf
 	@# Embed llama.cpp dynamic framework. -R preserves the Headers ->

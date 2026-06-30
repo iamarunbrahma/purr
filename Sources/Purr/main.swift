@@ -16,4 +16,19 @@ let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)
+
+// Give AppKit a real main menu. A pure-agent app (LSUIElement + .accessory)
+// that never sets NSApp.mainMenu has only the status-item menu bar, and on
+// macOS Tahoe that can leave the NSStatusItem orphaned off the bar (icon never
+// drawn). Working menu-bar apps always carry a standard app menu; mirror that.
+let mainMenu = NSMenu()
+let appMenuItem = NSMenuItem()
+mainMenu.addItem(appMenuItem)
+let appMenu = NSMenu()
+appMenu.addItem(
+    NSMenuItem(
+        title: "Quit Purr", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+appMenuItem.submenu = appMenu
+app.mainMenu = mainMenu
+
 app.run()

@@ -37,6 +37,7 @@ final class MenuBarController {
         self.onShowOnboarding = onShowOnboarding
         self.onQuit = onQuit
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = "PurrStatusBar2026"
 
         configureButton()
         rebuildMenu()
