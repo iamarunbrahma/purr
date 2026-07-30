@@ -14,10 +14,19 @@ import os.log
 // gate runs *before* we touch the running app: if the downloaded bundle
 // is corrupted or tampered the helper exits without destroying the install.
 //
-// Caveat: this app is ad-hoc signed. Replacing the binary changes its cdhash,
-// so the new copy is a different identity to TCC and the user has to re-grant
-// Accessibility + Input Monitoring after every update. The onboarding flow
-// already handles that case (it polls and re-registers on appear).
+// Releases are signed with a stable Developer ID (Team 5JCFRMC367), hardened
+// runtime, notarized and stapled - see the Makefile. Because the signing
+// identity is stable across versions, TCC keys off the designated requirement
+// rather than a per-build cdhash, so Accessibility + Input Monitoring grants
+// normally survive an update. They are only lost if the bundle ID or the
+// signing identity changes; the onboarding flow handles that case anyway (it
+// polls and re-registers on appear).
+//
+// Caveat: the helper's codesign gate is NOT pinned to our Team ID. It proves
+// the downloaded bundle carries an intact, valid signature, not that the
+// signature is ours - any bundle signed by any valid Developer ID would pass.
+// Pinning with `codesign -R` against 5JCFRMC367 is the outstanding fix. Until
+// then the SHA-256 sidecar is what ties the download to a release we published.
 //
 // All public methods are @MainActor — the state is @Published and SwiftUI
 // drives the calls from the main thread anyway. Keeping the class itself
@@ -164,12 +173,12 @@ final class Updater: ObservableObject {
         downloader = dl
         do {
             let path = try await dl.download(from: dmgURL)
-            // Hash-check before the install helper runs. The app is ad-hoc
-            // signed, so codesign --verify in the helper only proves
-            // self-consistency of whatever bundle is in the DMG - it is NOT a
-            // trust anchor. The SHA-256 sidecar is the only real integrity
-            // gate, so its absence is fatal: refuse to install rather than
-            // installing an unverified binary.
+            // Hash-check before the install helper runs. The helper's
+            // codesign --verify is unpinned, so it only proves the bundle in
+            // the DMG carries *some* valid signature, not that it carries
+            // ours. The SHA-256 sidecar is what ties the download to a release
+            // we actually published, so its absence is fatal: refuse to
+            // install rather than installing an unverified binary.
             guard let sha256URL else {
                 try? FileManager.default.removeItem(at: path)
                 log.error(
@@ -332,7 +341,9 @@ final class Updater: ObservableObject {
         // codesign --verify --deep --strict mirrors what Gatekeeper does
         // (per Apple TN2206) and detects any tampering or truncation of the
         // downloaded bundle. We run it BEFORE rm -rf'ing the live install
-        // so a bad DMG cannot brick the app.
+        // so a bad DMG cannot brick the app. Note this is an unpinned check:
+        // add -R "anchor apple generic and certificate leaf[subject.OU] =
+        // 5JCFRMC367" to also require the bundle be signed by us.
         // xattr -dr com.apple.quarantine prevents the "Are you sure you want
         // to open?" prompt that LaunchServices attaches to anything fetched
         // by URLSession; only stripped after the codesign gate passes.
