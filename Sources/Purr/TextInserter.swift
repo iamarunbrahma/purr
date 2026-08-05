@@ -42,6 +42,17 @@ final class TextInserter {
     // clobbered the sentence before the app pasted it. Serialising the writes
     // closes that window. All callers are @MainActor, so this state is only
     // ever touched on the main thread - no lock needed.
+    //
+    // Serialising narrows the race but doesn't close it: restoreDelay is a
+    // fixed guess, and some contexts (observed with tmux panes in
+    // WezTerm/Terminal.app, and with Spotlight search) take longer than
+    // 250ms to actually read the pasteboard after ⌘V. When that happens the
+    // *next* queued paste still overwrites the pasteboard before the first
+    // one was consumed, and the app reads that instead of the real
+    // sentence. The one caller that reliably queues a second paste
+    // immediately behind the first - the streaming flow's trailing gap
+    // space - now goes through insertLiteralSpace() instead, so it can't
+    // hit this window at all. See AppCoordinator.runStreamingTask().
     private var pasteQueue: [String] = []
     private var draining = false
 
@@ -102,6 +113,25 @@ final class TextInserter {
                 .post(tap: .cghidEventTap)
             usleep(800)
         }
+    }
+
+    // Types a single literal space instead of routing it through the paste
+    // queue. Used for the streaming flow's trailing "session gap" space,
+    // which is otherwise queued as a second paste immediately behind the
+    // final committed sentence's paste - see the race described on
+    // `pasteQueue` above. A direct keystroke never touches the pasteboard,
+    // so it can't overwrite (or be overwritten by) anything the sentence
+    // paste is still waiting to be consumed.
+    func insertLiteralSpace() {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            log.error("Could not create CGEventSource - literal space skipped.")
+            return
+        }
+        let spaceKey: CGKeyCode = 49
+        CGEvent(keyboardEventSource: source, virtualKey: spaceKey, keyDown: true)?
+            .post(tap: .cghidEventTap)
+        CGEvent(keyboardEventSource: source, virtualKey: spaceKey, keyDown: false)?
+            .post(tap: .cghidEventTap)
     }
 
     // ------------------------------------------------------------------
