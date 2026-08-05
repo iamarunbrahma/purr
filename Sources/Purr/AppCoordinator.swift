@@ -794,9 +794,16 @@ final class AppCoordinator: ObservableObject {
 
         // Separate dictation sessions so the next press doesn't butt up
         // ("worldfoo"): one trailing space, unless the last sentence already
-        // ended in whitespace (e.g. a "new line" command).
+        // ended in whitespace (e.g. a "new line" command). Typed directly
+        // rather than queued as another paste - see insertLiteralSpace().
+        // Queuing it as a second insert() here raced the sentence paste just
+        // above: on some targets (tmux panes in WezTerm/Terminal.app,
+        // Spotlight search) the target app took longer than TextInserter's
+        // fixed restore window to actually consume the sentence paste, so
+        // this trailing paste's pasteboard write landed first and the app
+        // read a bare space instead of the dictated sentence.
         if let last = committed.last?.last, !last.isWhitespace {
-            inserter.insert(" ")
+            inserter.insertLiteralSpace()
         }
     }
 
