@@ -12,7 +12,9 @@ import os.log
 //   - emojis and combining characters need extra care
 // Paste avoids all of that and is the same trick BetterTouchTool, Raycast,
 // and the dictation reference apps use.
+@MainActor
 final class TextInserter {
+    static let syntheticEventTag: Int64 = 0x5055525250415354
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "paste")
 
     // V on a US ANSI keyboard.
@@ -42,12 +44,18 @@ final class TextInserter {
     // clobbered the sentence before the app pasted it. Serialising the writes
     // closes that window. All callers are @MainActor, so this state is only
     // ever touched on the main thread - no lock needed.
-    private var pasteQueue: [String] = []
+    private struct PendingPaste {
+        let text: String
+        let shouldInsert: (() -> Bool)?
+        let onRejected: (() -> Void)?
+    }
+    private var pasteQueue: [PendingPaste] = []
+    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
     private var draining = false
 
-    func insert(_ text: String) {
+    func insert(_ text: String, shouldInsert: (() -> Bool)? = nil, onRejected: (() -> Void)? = nil) {
         guard !text.isEmpty else { return }
-        pasteQueue.append(text)
+        pasteQueue.append(PendingPaste(text: text, shouldInsert: shouldInsert, onRejected: onRejected))
         guard !draining else { return }
         draining = true
         drainNextPaste()
@@ -58,12 +66,30 @@ final class TextInserter {
     // pasteboard. Mid-session sentences are seconds apart (EOU debounce), so
     // this adds no latency there; only the final sentence + trailing space
     // pair actually queues, and a ~restoreDelay gap at session end is invisible.
+    func flush() async {
+        guard draining else { return }
+        await withCheckedContinuation { flushWaiters.append($0) }
+    }
+
     private func drainNextPaste() {
-        guard !pasteQueue.isEmpty else {
+        var next: PendingPaste?
+        while !pasteQueue.isEmpty {
+            let candidate = pasteQueue.removeFirst()
+            if candidate.shouldInsert?() == false {
+                candidate.onRejected?()
+                continue
+            }
+            next = candidate
+            break
+        }
+        guard let next else {
             draining = false
+            let waiters = flushWaiters
+            flushWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
             return
         }
-        let text = pasteQueue.removeFirst()
+        let text = next.text
 
         let pasteboard = NSPasteboard.general
         let snapshot = snapshotPasteboard(pasteboard)
@@ -160,6 +186,8 @@ final class TextInserter {
         let up = CGEvent(keyboardEventSource: source, virtualKey: kVKey, keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
+        down?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
+        up?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventTag)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }

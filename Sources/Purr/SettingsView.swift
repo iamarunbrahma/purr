@@ -99,9 +99,17 @@ struct SettingsView: View {
             }
 
             Section("Smart Typing") {
-                Toggle("Smart Typing (live preview)", isOn: $settings.smartTyping)
+                Toggle("Smart Typing", isOn: $settings.smartTyping)
                     .disabled(!engineSupportsStreaming || !eouInstalled || !settings.autoPaste)
                     .help(smartTypingHelpText)
+                Toggle("Stream directly at cursor", isOn: $settings.streamAtCursor)
+                    .disabled(!settings.smartTyping || !engineSupportsStreaming || !eouInstalled
+                        || !settings.autoPaste || !coordinator.safeToQuit)
+                if settings.streamAtCursor {
+                    Text("Insert live words as spoken, with no floating preview. Filler cleanup, dictionary replacements, and voice commands stay in phrase mode. Insertion stops if you click, type, or switch fields.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if !engineSupportsStreaming {
                     Label(
                         "Requires Parakeet. Switch the engine in the Engine tab.",
@@ -660,7 +668,7 @@ struct SettingsView: View {
         if !settings.autoPaste {
             return "Turn on \"Paste transcribed text at cursor automatically\" above to use Smart Typing."
         }
-        return "Shows a live preview as you speak, then inserts each sentence when you pause."
+        return "Choose live insertion at your cursor, or preview and insert complete phrases."
     }
 
     private var engineSupportsStreaming: Bool {

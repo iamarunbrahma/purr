@@ -23,6 +23,10 @@ final class RecordingHUD {
     private var window: NSPanel?
     private let model = HUDModel()
 
+    // Direct cursor streaming uses the menu-bar microphone indicator. Keep
+    // error messages visible, and leave other recording modes unchanged.
+    var hidesDictationWindow = false
+
     // The pending auto-hide for the current transient message / copied-flash.
     // Held so a newer HUD state can cancel it; otherwise a stale timer would
     // hide content that has since replaced what it was scheduled for.
@@ -45,6 +49,10 @@ final class RecordingHUD {
         model.message = nil
         model.mode = mode
         resetMeter()
+        if hidesDictationWindow && (mode == .warmingUp || mode == .recording || mode == .transcribing) {
+            window?.orderOut(nil)
+            return
+        }
         if window == nil { build() }
         resizeToFitContent()
         window?.orderFrontRegardless()

@@ -29,6 +29,7 @@ final class SettingsStore: ObservableObject {
         static let translateToEnglish = "stt.translateToEnglish"
         static let translationSourceLanguage = "stt.translationSourceLanguage"
         static let smartTyping = "ui.smartTyping"
+        static let streamAtCursor = "ui.streamAtCursor"
         static let voiceCommands = "ui.voiceCommands"
         static let dictionary = "post.dictionary"
         static let customVoiceCommands = "post.customVoiceCommands"
@@ -162,6 +163,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(smartTyping, forKey: Keys.smartTyping) }
     }
 
+    @Published var streamAtCursor: Bool {
+        didSet { defaults.set(streamAtCursor, forKey: Keys.streamAtCursor) }
+    }
+
     @Published var voiceCommands: Bool {
         didSet { defaults.set(voiceCommands, forKey: Keys.voiceCommands) }
     }
@@ -254,6 +259,7 @@ final class SettingsStore: ObservableObject {
         self.translateToEnglish = defaults.object(forKey: Keys.translateToEnglish) as? Bool ?? false
         self.translationSourceLanguage = defaults.string(forKey: Keys.translationSourceLanguage) ?? ""
         self.smartTyping = defaults.object(forKey: Keys.smartTyping) as? Bool ?? false
+        self.streamAtCursor = defaults.object(forKey: Keys.streamAtCursor) as? Bool ?? false
         self.voiceCommands = defaults.object(forKey: Keys.voiceCommands) as? Bool ?? true
         self.trimFillers = defaults.object(forKey: Keys.trimFillers) as? Bool ?? true
         self.summarizeMeetings = defaults.object(forKey: Keys.summarizeMeetings) as? Bool ?? false
@@ -324,6 +330,7 @@ final class SettingsStore: ObservableObject {
         translationSourceLanguage = ""
         autoPaste = true
         smartTyping = false
+        streamAtCursor = false
         voiceCommands = true
         trimFillers = true
         summarizeMeetings = false

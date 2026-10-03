@@ -74,7 +74,7 @@ While a meeting is recording, the dictation hotkey is suspended so a reflexive p
 ## Features
 
 - **Two transcription engines**: Parakeet TDT v2 (default) is English-only, on-device, and the fastest option on Apple Silicon. Switch to WhisperKit (Whisper Tiny EN through Large V3 Turbo) when you need another language.
-- **Smart Typing**: With Parakeet, words appear live in the focused app as you speak instead of only landing on key release. Each phrase stays separately undoable and coexists cleanly with autocorrect and IMEs.
+- **Smart Typing**: With Parakeet, preview words live and insert each complete phrase when you pause. Opt into **Stream directly at cursor** in General settings to insert live words with no floating preview. Direct mode is append-only and skips phrase cleanup, dictionary replacements, and voice commands; insertion stops after observed clicks, typing, or app/field changes. Turn it off to return to phrase insertion.
 - **Meeting mode**: Captures your mic and your Mac's system audio together, so everyone on a call is transcribed. Echo cancellation and offline speaker diarization (FluidAudio) label each voice, and transcripts save as Markdown to a folder you choose.
 - **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 3 4B locally on older systems.
 - **Voice editing**: Select text, hold the voice-edit hotkey, and speak the change. A parser handles "change X to Y", "delete X", "capitalize", and more; anything else replaces the selection wholesale.

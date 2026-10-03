@@ -16,8 +16,8 @@ protocol TranscriptionEngine: AnyObject {
 
 // Events from a live dictation session, in arrival order:
 //
-// * `.partial(suffix:)` — verbatim new tokens since the last partial.
-//   Append-only with the model's native spacing.
+// * `.partial(text:)` — full text of the current utterance, with native
+//   spacing. Consumers can distinguish new words from recognizer revisions.
 // * `.endOfUtterance(rawAccumulated:)` — silence boundary or final
 //   flush. The consumer subtracts the previous boundary's raw text to
 //   isolate the just-completed utterance, runs PostProcessor, and
@@ -26,7 +26,7 @@ protocol TranscriptionEngine: AnyObject {
 // Single AsyncStream guarantees ordering between partial typing and
 // EOU corrections.
 enum StreamingEvent: Equatable {
-    case partial(suffix: String)
+    case partial(text: String)
     case endOfUtterance(rawAccumulated: String)
 }
 

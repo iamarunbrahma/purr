@@ -118,15 +118,15 @@ final class ParakeetEngine: TranscriptionEngine {
                 onBatchProgress?(nil)
             }
         }
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
-            let fraction = progress.fractionCompleted
-            Task { @MainActor in
-                guard let self, self.batchDownloadActive else { return }
-                self.onBatchProgress?(fraction)
-            }
-        }
         let models = try await AsrModels.downloadAndLoad(
-            to: Self.batchModelDirectory, version: .v2, progressHandler: progressHandler)
+            to: Self.batchModelDirectory, version: .v2,
+            progressHandler: { [weak self] progress in
+                let fraction = progress.fractionCompleted
+                Task { @MainActor in
+                    guard let self, self.batchDownloadActive else { return }
+                    self.onBatchProgress?(fraction)
+                }
+            })
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
@@ -167,14 +167,15 @@ final class ParakeetEngine: TranscriptionEngine {
             chunkSize: Self.streamingChunk,
             eouDebounceMs: 1280
         )
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
-            let fraction = progress.fractionCompleted
-            Task { @MainActor in
-                guard let self, self.eouDownloadActive else { return }
-                self.onEOUProgress?(fraction)
-            }
-        }
-        try await manager.loadModels(to: ModelManager.modelsDirectory, progressHandler: progressHandler)
+        try await manager.loadModels(
+            to: ModelManager.modelsDirectory,
+            progressHandler: { [weak self] progress in
+                let fraction = progress.fractionCompleted
+                Task { @MainActor in
+                    guard let self, self.eouDownloadActive else { return }
+                    self.onEOUProgress?(fraction)
+                }
+            })
         streamingManager = manager
         log.info(
             "Parakeet EOU streaming downloaded and warmed up (\(Self.streamingChunk.durationMs, privacy: .public) ms chunks)."
@@ -290,10 +291,10 @@ final class ParakeetEngine: TranscriptionEngine {
 // Two callbacks feed one event stream:
 //
 // * `setPartialCallback` — 320 ms cadence, full accumulated transcript.
-//   We diff against the last emitted text and yield the new suffix.
-//   EOU's decoder is append-only so the diff is always a clean suffix.
-// * `setEouCallback` — fires after `eouDebounceMs` of sustained silence
-//   with the raw accumulated transcript at that boundary.
+//   Consumers receive the full snapshot so revisions cannot masquerade as
+//   a new suffix and duplicate already-inserted words.
+// * `setEouCallback` — fires after the configured silence debounce with
+//   the accumulated transcript at that phrase boundary.
 //
 // `finish()` always emits one final `.endOfUtterance` before closing
 // the stream so trailing audio is reconciled even when no in-stream
@@ -304,7 +305,6 @@ final class StreamingEouAsrSession: StreamingSession {
     private let continuation: AsyncStream<StreamingEvent>.Continuation
     private let manager: StreamingEouAsrManager
     private let inputFormat: AVAudioFormat
-    private let diff = PartialDiff()
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet.eou")
 
     init(manager: StreamingEouAsrManager) {
@@ -332,12 +332,9 @@ final class StreamingEouAsrSession: StreamingSession {
     func start() async throws {
         // Handlers stay synchronous - a Task hop would race finish()'s
         // continuation.finish() and drop the last partial / EOU signal.
-        let diff = self.diff
         let continuation = self.continuation
         await manager.setPartialCallback { full in
-            if let suffix = diff.consume(full) {
-                continuation.yield(.partial(suffix: suffix))
-            }
+            continuation.yield(.partial(text: full))
         }
         await manager.setEouCallback { rawAccumulated in
             continuation.yield(.endOfUtterance(rawAccumulated: rawAccumulated))
@@ -358,7 +355,6 @@ final class StreamingEouAsrSession: StreamingSession {
         // the manager is an actor so this reset can't race the next process().
         if await manager.eouDetected {
             await manager.reset()
-            diff.reset()
         }
     }
 
@@ -395,38 +391,5 @@ final class StreamingEouAsrSession: StreamingSession {
             dst.update(from: base, count: samples.count)
         }
         return buffer
-    }
-}
-
-// Shared between the @Sendable partial callback (manager actor) and the
-// @MainActor session. NSLock keeps the callback synchronous; an actor
-// would force a Task hop that races finish()'s stream closure.
-private final class PartialDiff: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lastEmitted: String = ""
-
-    func consume(_ full: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        // Within an utterance the transcript only grows, so the diff is a clean
-        // suffix. The session calls reset() at each EOU boundary (the recognizer
-        // is reset there), so the next utterance diffs from empty. The prefix
-        // branch is a safety hatch for any out-of-order/revised emission.
-        guard full.hasPrefix(lastEmitted) else {
-            lastEmitted = full
-            return full.isEmpty ? nil : full
-        }
-        guard full.count > lastEmitted.count else { return nil }
-        let suffix = String(full.dropFirst(lastEmitted.count))
-        lastEmitted = full
-        return suffix
-    }
-
-    // Called at each EOU boundary so the next utterance's partials diff from
-    // empty (the recognizer's accumulated transcript was just reset).
-    func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        lastEmitted = ""
     }
 }

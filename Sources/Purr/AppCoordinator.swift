@@ -126,6 +126,8 @@ final class AppCoordinator: ObservableObject {
     private var recordingStartedAt: Date?
     private var streamingTask: Task<Void, Never>?
     private var streamingSession: (any StreamingSession)?
+    private var cursorTarget: CursorTarget?
+    private var streamingInsertionWarning: String?
     // The audio-feed loop, pumping recorder.chunks into the streaming session.
     // Owned here (not nested in streamingTask) so finishStreamingRecording()
     // can await it - draining every buffered chunk into the session - before
@@ -668,9 +670,24 @@ final class AppCoordinator: ObservableObject {
     // ------------------------------------------------------------------
 
     private func beginStreamingRecording() {
+        streamingInsertionWarning = nil
+        cursorTarget?.stop()
+        cursorTarget = nil
+        if SettingsStore.shared.streamAtCursor {
+            do { cursorTarget = try CursorTarget() }
+            catch { hud.showMessage(error.localizedDescription, autoHideAfter: 4); return }
+        }
+        hud.hidesDictationWindow = cursorTarget != nil
         streamingStartupInFlight = true
         releasedDuringStartup = false
         Task {
+            defer {
+                if streamingSession == nil {
+                    cursorTarget?.stop()
+                    cursorTarget = nil
+                    hud.hidesDictationWindow = false
+                }
+            }
             do {
                 let session = try await engine.makeStreamingSession()
 
@@ -685,6 +702,12 @@ final class AppCoordinator: ObservableObject {
                     return
                 }
 
+                if let target = cursorTarget, !target.isValid() {
+                    await session.cancel()
+                    streamingStartupInFlight = false
+                    hud.showMessage(target.failure?.localizedDescription ?? "Live insertion stopped.", autoHideAfter: 4)
+                    return
+                }
                 self.streamingSession = session
 
                 do {
@@ -705,7 +728,7 @@ final class AppCoordinator: ObservableObject {
                 // Reserve the pill's preview area before the first mic buffer
                 // flips it to .recording, so it sizes once and shows the live
                 // sentence as it streams.
-                hud.setPreviewActive(true)
+                hud.setPreviewActive(cursorTarget == nil)
                 hud.show(.warmingUp)
                 startLevelTask()
                 streamingStartupInFlight = false
@@ -743,6 +766,10 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func runStreamingTask(session: any StreamingSession) async {
+        if let cursorTarget {
+            await runCursorStreamingTask(session: session, target: cursorTarget)
+            return
+        }
         // Per-sentence commit. Partials only drive the HUD preview - nothing
         // touches the document until a pause (EOU), when we post-process that
         // one sentence and paste it once. Already-committed text is never
@@ -758,8 +785,8 @@ final class AppCoordinator: ObservableObject {
 
         for await event in session.events {
             switch event {
-            case .partial(let suffix):
-                preview += suffix
+            case .partial(let text):
+                preview = text
                 hud.updatePreview(preview)
             case .endOfUtterance(let utteranceRaw):
                 preview = ""
@@ -800,7 +827,41 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    private func runCursorStreamingTask(session: any StreamingSession, target: CursorTarget) async {
+        var transcript = CursorTranscript()
+        for await event in session.events {
+            guard target.isValid() else {
+                streamingInsertionWarning = target.failure?.localizedDescription
+                continue
+            }
+            let text: String
+            switch event {
+            case .partial(let partial): text = transcript.partial(partial)
+            case .endOfUtterance(let final): text = transcript.endOfUtterance(final)
+            }
+            enqueueCursorText(text, target: target)
+        }
+        if target.isValid() { enqueueCursorText(transcript.finish(), target: target) }
+        // Keep the target's monitors alive until every pending paste has either
+        // completed or been rejected. No delayed words may follow a focus change.
+        await inserter.flush()
+        if transcript.hadRevision, streamingInsertionWarning == nil {
+            streamingInsertionWarning = "The recognizer revised some words. Check the live text; phrase mode handles corrections."
+        }
+    }
+
+    private func enqueueCursorText(_ text: String, target: CursorTarget) {
+        inserter.insert(text, shouldInsert: { target.isValid() }, onRejected: { [weak self] in
+            self?.streamingInsertionWarning = target.failure?.localizedDescription
+        })
+    }
+
     private func finishStreamingRecording() async {
+        defer {
+            cursorTarget?.stop()
+            cursorTarget = nil
+            hud.hidesDictationWindow = false
+        }
         levelTask?.cancel()
         levelTask = nil
         _ = recorder.stop()
@@ -837,7 +898,11 @@ final class AppCoordinator: ObservableObject {
             streamingSession = nil
             streamingTask = nil
             state = .idle
-            hud.hide()
+            if let warning = streamingInsertionWarning {
+                hud.showMessage(warning, autoHideAfter: 4)
+            } else {
+                hud.hide()
+            }
         } catch {
             // finish() threw before closing the stream. Close it explicitly so
             // the consumer loop terminates, then drain both tasks (now bounded)
