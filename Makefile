@@ -39,7 +39,7 @@ NOTARY_PROFILE ?= purr-app
 # the bundle's Frameworks/ and add the rpath the executable needs to
 # find it at runtime (the linker's default @loader_path works when the
 # binary sits beside the framework, but the .app layout splits them).
-LLAMA_FRAMEWORK_SRC := $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/llama.framework
+LLAMA_FRAMEWORK_SRC = $(BIN_DIR)/llama.framework
 
 # The @Generable / @Guide macros (FoundationModels) need Xcode's compiler
 # plugin (libFoundationModelsMacros), which the standalone Command Line
@@ -50,12 +50,21 @@ LLAMA_FRAMEWORK_SRC := $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/llama.framework
 DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 export DEVELOPER_DIR
 
+# Where SwiftPM writes the built executable and stages llama.framework. Asked
+# of SwiftPM instead of hardcoded: Xcode 26 and earlier report
+# .build/arm64-apple-macosx/<config>, Xcode 27 reports
+# .build/out/Products/<Config> (#13). DEVELOPER_DIR is passed explicitly
+# because macOS's make (3.81) doesn't export variables to $(shell), and the
+# query must hit the same toolchain as the build. `=` (not `:=`) so only the
+# recipes that copy build output pay for the call.
+BIN_DIR = $(shell DEVELOPER_DIR="$(DEVELOPER_DIR)" swift build -c $(CONFIG) --arch arm64 --show-bin-path)
+
 .PHONY: app run dmg notarize-app clean
 
 app:
 	swift build -c $(CONFIG) --arch arm64
 	@mkdir -p $(MACOS_DIR) $(RES_DIR) $(FRAMEWORKS_DIR)
-	@cp $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/$(APP_NAME) $(MACOS_DIR)/$(APP_NAME)
+	@cp "$(BIN_DIR)/$(APP_NAME)" $(MACOS_DIR)/$(APP_NAME)
 	@cp $(INFO_PLIST) $(CONTENTS)/Info.plist
 	@cp Resources/AppIcon.icns $(RES_DIR)/AppIcon.icns
 	@cp Resources/purr_menubar_glyph.pdf $(RES_DIR)/purr_menubar_glyph.pdf
@@ -65,7 +74,7 @@ app:
 	@# ambiguous. -p keeps perms/timestamps so the signature stays
 	@# reproducible across builds.
 	@rm -rf $(FRAMEWORKS_DIR)/llama.framework
-	@cp -Rp $(LLAMA_FRAMEWORK_SRC) $(FRAMEWORKS_DIR)/llama.framework
+	@cp -Rp "$(LLAMA_FRAMEWORK_SRC)" $(FRAMEWORKS_DIR)/llama.framework
 	@# Add @executable_path/../Frameworks to the binary's rpath. Quiet if
 	@# already present (re-runs of `make app` would otherwise fail).
 	@install_name_tool -add_rpath @executable_path/../Frameworks $(MACOS_DIR)/$(APP_NAME) 2>/dev/null || true
