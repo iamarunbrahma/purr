@@ -87,6 +87,10 @@ final class AppCoordinator: ObservableObject {
     private let hud = RecordingHUD()
     private let hotkey = HotkeyManager()
 
+    // Shortcuts dead right now: Secure Input is on and the Carbon fallback
+    // couldn't take them over. Read by the menu bar on each open.
+    var shortcutsBlockedBySecureInput: [String] { hotkey.secureInputGaps }
+
     // Rebuilt on Settings engine switch; only one lives at a time so both
     // ~1GB pipes are never loaded together.
     private var engine: any TranscriptionEngine = ParakeetEngine()
@@ -140,6 +144,10 @@ final class AppCoordinator: ObservableObject {
         if SettingsStore.shared.smartTyping, !ParakeetEngine.eouIsInstalled() {
             SettingsStore.shared.smartTyping = false
         }
+
+        // Off the main actor: the first launch after the Gemma 4 switch
+        // removes the 2.5 GB Gemma 3 file.
+        Task.detached(priority: .utility) { LLMModelManager.removeLegacyModels() }
 
         // The recorder self-skips warming on Bluetooth to avoid pinning SCO mode.
         recorder.allowsWarmKeeping = true
@@ -700,10 +708,12 @@ final class AppCoordinator: ObservableObject {
 
     private func runStreamingTask(session: any StreamingSession) async {
         // Per-sentence commit: partials only drive the HUD preview, nothing
-        // touches the document until an EOU pause pastes it once - committed
-        // text is never re-edited. `committed` holds the exact pasted
-        // strings so "scratch that" can delete them precisely.
-        var committed: [String] = []
+        // touches the document until a pause pastes the sentence once, at
+        // batch quality - committed text is never re-edited. `committed`
+        // holds the exact pasted strings so "scratch that" can delete them
+        // precisely, and the app each went to: the backspaces land in whatever
+        // app is frontmost, so they're only sent while that's still the one.
+        var committed: [(text: String, app: pid_t?)] = []
         var preview = ""
 
         for await event in session.events {
@@ -711,11 +721,13 @@ final class AppCoordinator: ObservableObject {
             case .partial(let suffix):
                 preview += suffix
                 hud.updatePreview(preview)
-            case .endOfUtterance(let utteranceRaw):
+            case .endOfUtterance(let utteranceRaw, let audio):
                 preview = ""
                 hud.updatePreview("")
-
-                let result = makePostProcessor().apply(utteranceRaw)
+                // The session only ends utterances that decoded words or held
+                // speech, so bare room noise never reaches the batch model.
+                let raw = await batchQualityText(audio: audio, streamed: utteranceRaw)
+                let result = makePostProcessor().apply(raw)
                 postLog.debug(
                     "EOU commit: '\(result.text, privacy: .public)' drop=\(result.dropPreviousChunks, privacy: .public)"
                 )
@@ -724,19 +736,25 @@ final class AppCoordinator: ObservableObject {
                 // exactly the characters we pasted for the last sentence(s).
                 if result.dropPreviousChunks > 0 {
                     let drop = min(result.dropPreviousChunks, committed.count)
-                    let chars = committed.suffix(drop).reduce(0) { $0 + $1.count }
+                    let pieces = committed.suffix(drop)
                     committed.removeLast(drop)
-                    if chars > 0 { inserter.deleteBackward(chars) }
+                    let frontApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    if pieces.allSatisfy({ $0.app == frontApp }) {
+                        let chars = pieces.reduce(0) { $0 + $1.text.count }
+                        if chars > 0 { inserter.deleteBackward(chars) }
+                    } else {
+                        log.info("Scratch that: the sentence went to another app - not deleting.")
+                    }
                 }
 
                 guard !result.text.isEmpty else { continue }
                 // One space between sentences, unless either side already
                 // carries a break (a "new line" command, or a trimmed leading space).
-                let prevNeedsGap = committed.last?.last.map { !$0.isWhitespace } ?? false
+                let prevNeedsGap = committed.last?.text.last.map { !$0.isWhitespace } ?? false
                 let nextNeedsGap = result.text.first.map { !$0.isWhitespace } ?? true
                 let piece = (prevNeedsGap && nextNeedsGap ? " " : "") + result.text
                 inserter.insert(piece)
-                committed.append(piece)
+                committed.append((piece, NSWorkspace.shared.frontmostApplication?.processIdentifier))
             }
         }
         hud.updatePreview("")
@@ -745,8 +763,26 @@ final class AppCoordinator: ObservableObject {
         // ("worldfoo"): one trailing space, unless the last sentence already
         // ended in whitespace (e.g. a "new line" command). Direct keystroke,
         // not insert() - see insertLiteralSpace's comment.
-        if let last = committed.last?.last, !last.isWhitespace {
+        if let last = committed.last?.text.last, !last.isWhitespace {
             inserter.insertLiteralSpace()
+        }
+    }
+
+    // The streaming model is fast but rough (lowercase, no punctuation, weaker
+    // words), so it only drives the preview and finds the pauses: each
+    // finished utterance's audio is re-transcribed by the batch model, prepared
+    // the same way as a batch recording. The streamed text is the fallback if
+    // that pass fails.
+    private func batchQualityText(audio: [Float], streamed: String) async -> String {
+        postLog.debug("streamed: '\(streamed, privacy: .public)'")
+        do {
+            let prepared = AudioPreprocessor.normalize(audio)
+            return try await engine.transcribe(samples: prepared.samples)
+        } catch {
+            log.error(
+                "Batch pass failed, pasting the streamed text: \(error.localizedDescription, privacy: .public)"
+            )
+            return streamed
         }
     }
 

@@ -58,8 +58,9 @@ final class WhisperEngine: TranscriptionEngine {
             SettingsStore.shared.translateToEnglish
             && ModelManager.supportsTranslation(modelIdentifier)
         // A pinned source language skips Whisper's audio-based detection, which
-        // is unreliable on short clips. Empty string means auto-detect; plain
-        // transcription always auto-detects.
+        // is unreliable on short clips. Empty string means auto-detect, which
+        // has to be asked for: with the prefill prompt on and no language,
+        // WhisperKit forces <|en|> and turns other languages into English (#7).
         let sourceLanguage = SettingsStore.shared.translationSourceLanguage
         let language: String? = (translate && !sourceLanguage.isEmpty) ? sourceLanguage : nil
         let options = DecodingOptions(
@@ -69,6 +70,7 @@ final class WhisperEngine: TranscriptionEngine {
             temperature: 0.0,
             sampleLength: 224,
             usePrefillPrompt: true,
+            detectLanguage: language == nil,
             withoutTimestamps: true,
             wordTimestamps: false
         )

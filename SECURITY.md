@@ -93,7 +93,7 @@ The only outbound connections Purr ever makes:
 | --- | --- |
 | Update check | `api.github.com` |
 | Update download | `github.com`, redirecting to `objects.githubusercontent.com` |
-| Gemma 3 4B summary model | `huggingface.co` |
+| Gemma 4 E2B summary model | `huggingface.co` |
 | Parakeet / Whisper / diarizer weights | fetched by FluidAudio and WhisperKit |
 
 The updater refuses any download URL whose host is not exactly `github.com` over HTTPS,
@@ -159,7 +159,7 @@ Weaknesses I already know about:
   Team ID `5JCFRMC367` with `codesign -R` is the fix, and it is not yet in place.
 - **Releases are built by hand on the maintainer's machine.** There is no CI, so there is no
   build provenance or attestation. See [RELEASING.md](RELEASING.md).
-- **`Package.resolved` is not committed**, and Swift dependencies use `from:` version ranges,
+- **`Package.resolved` is not committed**, and only FluidAudio is pinned to an exact version,
   so builds are not byte-for-byte reproducible across machines or time.
 - **Vendored SpeexDSP has not been audited or fuzzed.** `Sources/CEcho` contains SpeexDSP
   compiled from source with warnings suppressed (`-w`) and a hand-written `config.h`. It

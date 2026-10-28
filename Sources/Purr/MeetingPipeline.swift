@@ -188,6 +188,7 @@ final class MeetingPipeline: ObservableObject {
                 )
                 document = MeetingDocument.format(
                     localOnly: asr,
+                    engine: meetingModelName,
                     duration: duration,
                     recordedAt: Date()
                 )
@@ -223,6 +224,12 @@ final class MeetingPipeline: ObservableObject {
                     localASR: localASR,
                     remoteASR: remoteASR,
                     remoteSegments: remoteSegments,
+                    cancellation: {
+                        EchoCanceller.cancellation(
+                            mic: samples, cleaned: cleanedMic, reference: systemSamples,
+                            from: $0, to: $1)
+                    },
+                    engine: meetingModelName,
                     duration: duration,
                     recordedAt: Date()
                 )
@@ -344,6 +351,12 @@ final class MeetingPipeline: ObservableObject {
             return try await parakeet.transcribeDetailed(samples: samples)
         }
         return try await parakeet.transcribeMeeting(samples: samples, language: language)
+    }
+
+    // The model transcribeMeetingAudio routes to, for the document header.
+    private var meetingModelName: String {
+        ParakeetLanguage.named(SettingsStore.shared.meetingLanguage).fluidAudioLanguage == nil
+            ? "Parakeet TDT v2" : "Parakeet TDT v3"
     }
 
     // Surfaces counts/confidence for diagnosing "no speech detected" without

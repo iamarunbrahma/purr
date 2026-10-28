@@ -171,7 +171,7 @@ final class SettingsStore: ObservableObject {
     }
 
     // Off until the GGUF model is downloaded and opted in (macOS < 26) or
-    // Apple Intelligence is available (26+) - never a 2.5GB surprise download.
+    // Apple Intelligence is available (26+) - never a 3.3GB surprise download.
     @Published var summarizeMeetings: Bool {
         didSet { defaults.set(summarizeMeetings, forKey: Keys.summarizeMeetings) }
     }

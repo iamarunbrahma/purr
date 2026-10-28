@@ -2,37 +2,39 @@ import CryptoKit
 import Foundation
 import os.log
 
-// Tracks the local install state of the Gemma 3 4B GGUF weights used by
+// Tracks the local install state of the Gemma 4 E2B GGUF weights used by
 // MeetingSummarizer's llama.cpp backend.
 //
-// The single quantized GGUF (Q4_K_M, ~2.49 GB) is downloaded from Hugging Face
+// The single quantized GGUF (Q4_0, ~3.35 GB) is downloaded from Hugging Face
 // to ~/Library/Application Support/Purr/models/ alongside the Parakeet /
 // Whisper weights, so models are findable in one place and survive
 // `defaults delete`.
 //
-// The Gemma Terms of Use require a flow-down notice when exposing the model's
-// functionality through a UI; Settings renders it inline before a download.
+// Gemma 4 is Apache 2.0; Settings links the license before a download.
 enum LLMModelManager {
     private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "llm-models")
 
-    static let defaultModelFilename = "gemma-3-4b-it-Q4_K_M.gguf"
-    static let defaultModelLabel = "Gemma 3 4B Instruct (Q4_K_M)"
-    static let defaultModelSizeMB = 2_490
+    static let defaultModelFilename = "gemma-4-E2B_q4_0-it.gguf"
+    static let defaultModelLabel = "Gemma 4 E2B Instruct (Q4_0)"
+    static let defaultModelSizeMB = 3_350
     static let defaultModelURL = URL(
         string:
-            "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf"
+            "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf"
     )!
-    static let licenseURL = URL(string: "https://ai.google.dev/gemma/terms")!
-    static let licenseName = "Gemma Terms of Use"
+    static let licenseURL = URL(string: "https://www.apache.org/licenses/LICENSE-2.0")!
+    static let licenseName = "Apache 2.0 license"
 
-    // Pinned to the canonical Q4_K_M GGUF published by `unsloth`. Source of
+    // Pinned to Google's own quantization-aware-trained Q4_0 GGUF. Source of
     // truth:
-    //   https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/blob/main/gemma-3-4b-it-Q4_K_M.gguf
+    //   https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/blob/main/gemma-4-E2B_q4_0-it.gguf
     // Verifying before the file reaches llama.cpp closes the supply-chain path
     // through a compromised HF mirror or tampered CDN edge.
     static let defaultModelSHA256 =
-        "04a43a22e8d2003deda5acc262f68ec1005fa76c735a9962a8c77042a74a7d19"
-    static let defaultModelExpectedSize: Int64 = 2_489_894_016
+        "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
+    static let defaultModelExpectedSize: Int64 = 3_349_516_256
+
+    // Gemma 3 4B, downloaded by earlier releases. Nothing loads it any more.
+    private static let legacyModelFilenames = ["gemma-3-4b-it-Q4_K_M.gguf"]
 
     static var modelsDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
@@ -51,8 +53,8 @@ enum LLMModelManager {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
             return false
         }
-        // Guard against a partial download leaving a stub behind. Real Q4_K_M
-        // weights are 2.3 GB+, so anything far smaller counts as missing and
+        // Guard against a partial download leaving a stub behind. Real Q4_0
+        // weights are 3.3 GB+, so anything far smaller counts as missing and
         // the next download retries cleanly.
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         return size > 1_000_000_000
@@ -63,6 +65,22 @@ enum LLMModelManager {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
             log.info("Deleted Gemma GGUF at \(url.path, privacy: .public)")
+        }
+    }
+
+    // Run once at launch so an upgrade doesn't strand the old weights on disk.
+    static func removeLegacyModels() {
+        for name in legacyModelFilenames {
+            let url = modelsDirectory.appendingPathComponent(name, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+                log.info("Removed legacy model \(name, privacy: .public)")
+            } catch {
+                log.error(
+                    "Could not remove legacy model \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
     }
 
@@ -123,7 +141,7 @@ enum LLMModelManager {
         log.info("Gemma GGUF SHA-256 verified.")
     }
 
-    // 4 MiB chunks so peak memory stays bounded against the 2.5 GB file.
+    // 4 MiB chunks so peak memory stays bounded against the 3.3 GB file.
     static func sha256OfFile(at url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }

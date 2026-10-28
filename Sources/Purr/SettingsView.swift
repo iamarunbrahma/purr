@@ -272,13 +272,11 @@ struct SettingsView: View {
                     .help(
                         "Show the floating \u{201C}Meeting \u{00B7} 0:00\u{201D} pill with a live waveform while a meeting records. When off, the menu bar still shows a recording indicator."
                     )
-                Toggle("Save meeting audio", isOn: $settings.saveMeetingAudio)
+                Toggle("Save Meeting Audio", isOn: $settings.saveMeetingAudio)
                     .disabled(!settings.meetingEnabled)
-                Text(
-                    "Saves a compressed recording (.m4a) next to each meeting's transcript in your meetings folder, so a weak transcript can be re-verified or re-transcribed later. Off by default - audio is larger and more sensitive than text."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                    .help(
+                        "Saves a compressed recording (.m4a) next to each meeting's transcript, so a weak transcript can be re-verified or re-transcribed later."
+                    )
                 fluidModelCard(
                     name: "Diarization",
                     size: "~21 MB",
@@ -504,7 +502,7 @@ struct SettingsView: View {
 
             Section("Models") {
                 Text(
-                    "Remove every downloaded model to reclaim disk space: Parakeet, the Whisper models, the diarizer, and the Gemma 3 4B model. Your meeting transcripts and preferences are kept."
+                    "Remove every downloaded model to reclaim disk space: Parakeet, the Whisper models, the diarizer, and the Gemma 4 E2B model. Your meeting transcripts and preferences are kept."
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -989,11 +987,6 @@ private struct MeetingLanguageModelCard: View {
                         Text("not yet downloaded").foregroundStyle(.secondary).font(.caption2)
                     }
                 }
-                Text(
-                    "Needed for non-English meeting transcription. Downloads automatically on your next meeting if you skip this."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
                 if let progress {
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
@@ -1022,6 +1015,9 @@ private struct MeetingLanguageModelCard: View {
             }
         }
         .padding(.vertical, 4)
+        .help(
+            "Needed for non-English meeting transcription. Downloads automatically on your next meeting if you skip this."
+        )
         .onAppear { isInstalled = ParakeetEngine.meetingModelIsInstalled() }
         .onChange(of: coordinator.meetingLanguageModelProgress) { _, newValue in
             if newValue == nil { isInstalled = ParakeetEngine.meetingModelIsInstalled() }
@@ -1183,7 +1179,7 @@ private func friendlyDownloadError(_ error: Error) -> String {
 
 // ----------------------------------------------------------------------
 // Meeting summary section - LLM picker + auto-summarize toggle, Features tab.
-// A Download button here lets users pre-fetch the ~2.5GB Gemma weights
+// A Download button here lets users pre-fetch the ~3.3GB Gemma weights
 // instead of waiting for the first real summarization.
 // ----------------------------------------------------------------------
 
@@ -1218,11 +1214,11 @@ private struct MeetingSummarySection: View {
         }
         gemmaCard
 
-        // Required by the Gemma Terms of Use when exposing it through a UI.
+        // Names the weights' license before they download.
         Label {
-            (Text("Gemma 3 is provided under the ")
+            (Text("Gemma 4 is provided by Google under the ")
                 + Text(LLMModelManager.licenseName).underline()
-                + Text(". Downloading the model accepts those terms."))
+                + Text("."))
                 .font(.caption)
         } icon: {
             Image(systemName: "info.circle")
@@ -1350,7 +1346,7 @@ private struct MeetingSummarySection: View {
                 Button("Retry") { vm.download() }
                     .controlSize(.small)
             } else if vm.isInstalled {
-                // Offered even when Gemma is active - reclaims the ~2.5GB
+                // Offered even when Gemma is active - reclaims the ~3.3GB
                 // without switching backend first; vm.delete() handles that.
                 Button("Delete", role: .destructive) { vm.delete() }
                     .controlSize(.small)
@@ -1433,7 +1429,7 @@ final class LLMSummaryViewModel: ObservableObject {
 
         Task { @MainActor in
             // Unload first - a cached session pointing at deleted weights
-            // would be reused by the next generation, and leak ~2.5GB.
+            // would be reused by the next generation, and leak ~3.3GB.
             await summarizer.unload()
             log.info("Gemma delete: in-memory unload complete; about to remove on-disk weights.")
 

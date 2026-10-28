@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-orange)](#)
-[![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange?logo=swift)](#)
+[![Swift 6.2+](https://img.shields.io/badge/Swift-6.2%2B-orange?logo=swift)](#)
 [![Engine: Parakeet TDT v2](https://img.shields.io/badge/Engine-Parakeet%20TDT%20v2-purple)](#)
 
 ### Hold a key. Speak. Your words type into any text field - 100% local, on-device.
@@ -76,7 +76,7 @@ While a meeting is recording, the dictation hotkey is suspended so a reflexive p
 - **Two transcription engines**: Parakeet TDT v2 (default) is English-only, on-device, and the fastest option on Apple Silicon. Switch to WhisperKit (Whisper Tiny EN through Large V3 Turbo) when you need another language.
 - **Smart Typing**: With Parakeet, words appear live in the focused app as you speak instead of only landing on key release. Each phrase stays separately undoable and coexists cleanly with autocorrect and IMEs.
 - **Meeting mode**: Captures your mic and your Mac's system audio together, so everyone on a call is transcribed. Echo cancellation and offline speaker diarization (FluidAudio) label each voice, and transcripts save as Markdown to a folder you choose.
-- **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 3 4B locally on older systems.
+- **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 4 E2B locally on older systems.
 - **Voice editing**: Select text, hold the voice-edit hotkey, and speak the change. A parser handles "change X to Y", "delete X", "capitalize", and more; anything else replaces the selection wholesale.
 - **In-speech voice commands**: Punctuate, break paragraphs, and undo hands-free by saying "comma", "period", "new paragraph", or "scratch that" as you dictate. Add your own in Settings.
 - **Custom dictionary**: Teach Purr the proper nouns and acronyms it keeps mishearing - map "fluid audio" to "FluidAudio" or "ts" to "TypeScript".
@@ -202,7 +202,7 @@ Purr builds on open-source work in two categories, handled differently.
 
 - **Parakeet TDT v2** (NVIDIA, run via FluidAudio) - CC-BY-4.0. Powers the default English dictation, voice editing, and meeting transcription.
 - **Whisper** (OpenAI, via WhisperKit) - MIT. Optional engine for other languages.
-- **Gemma 3 4B Instruct** (Google) - [Gemma Terms of Use](https://ai.google.dev/gemma/terms). Used for meeting summaries. Settings surfaces this notice before the download begins; by downloading the model you accept those terms, including the [Gemma Prohibited Use Policy](https://ai.google.dev/gemma/prohibited_use_policy).
+- **Gemma 4 E2B Instruct** (Google) - [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0). Used for meeting summaries and Voice Edit.
 
 **Bundled code** is compiled or linked into the app:
 

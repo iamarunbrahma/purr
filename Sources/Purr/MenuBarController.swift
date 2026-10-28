@@ -1,12 +1,19 @@
 import AppKit
 import Combine
+import IOKit
 
 // NSStatusItem-based menu bar surface. The icon reflects coordinator state so
 // Purr's status is readable even when the floating HUD is dismissed.
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private var stateCancellable: AnyCancellable?
+    // Shown when Secure Input has knocked out a shortcut - otherwise it
+    // silently does nothing. See menuNeedsUpdate(_:).
+    private let secureInputTitle = NSMenuItem()
+    private let secureInputDetail = NSMenuItem()
+    private let secureInputSeparator = NSMenuItem.separator()
+    private let blockedShortcuts: () -> [String]
 
     private let onShowAbout: () -> Void
     private let onShowSettings: () -> Void
@@ -34,7 +41,9 @@ final class MenuBarController {
         self.onShowSettings = onShowSettings
         self.onShowOnboarding = onShowOnboarding
         self.onQuit = onQuit
+        self.blockedShortcuts = { [weak coordinator] in coordinator?.shortcutsBlockedBySecureInput ?? [] }
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
         statusItem.autosaveName = "com.arunbrahma.hello.statusItem"
 
         configureButton()
@@ -53,6 +62,15 @@ final class MenuBarController {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
+
+        secureInputTitle.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+        for item in [secureInputTitle, secureInputDetail, secureInputSeparator] {
+            item.isEnabled = false
+            item.isHidden = true
+            menu.addItem(item)
+        }
 
         menu.addItem(menuItem(title: "About Purr", selector: #selector(triggerAbout)))
         menu.addItem(.separator())
@@ -86,6 +104,37 @@ final class MenuBarController {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: keyEquivalent)
         item.keyEquivalentModifierMask = modifiers
         return item
+    }
+
+    // Re-checked on every open. Under Secure Input HotkeyManager moves key
+    // combinations to Carbon hotkeys, so this lists only the ones Carbon
+    // refused because another app already owns them.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let blocked = blockedShortcuts()
+        for item in [secureInputTitle, secureInputDetail, secureInputSeparator] {
+            item.isHidden = blocked.isEmpty
+        }
+        guard !blocked.isEmpty else { return }
+        secureInputTitle.title = "\(blocked.joined(separator: ", ")) blocked by Secure Input"
+        let holder = Self.secureInputHolder() ?? "another app"
+        secureInputDetail.title =
+            holder == "loginwindow"
+            ? "Held by loginwindow - log out or restart to clear it."
+            : "Held by \(holder)."
+    }
+
+    // Name of the process holding Secure Input, from the console session's
+    // IORegistry entry (where `ioreg -l | grep SecureInput` finds it).
+    private static func secureInputHolder() -> String? {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        defer { IOObjectRelease(root) }
+        guard
+            let users = IORegistryEntryCreateCFProperty(
+                root, "IOConsoleUsers" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? [[String: Any]],
+            let pid = users.lazy.compactMap({ $0["kCGSSessionSecureInputPID"] as? Int }).first
+        else { return nil }
+        return NSRunningApplication(processIdentifier: pid_t(pid))?.localizedName
     }
 
     @objc private func triggerAbout() { onShowAbout() }

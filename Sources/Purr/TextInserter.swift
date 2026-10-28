@@ -80,6 +80,8 @@ final class TextInserter {
         item.setData(Data(), forType: Self.concealedType)
         item.setData(Data(), forType: Self.transientType)
         pasteboard.writeObjects([item])
+        // Any other write to the pasteboard from here on bumps this.
+        let ourChangeCount = pasteboard.changeCount
 
         sendCommandV()
 
@@ -87,7 +89,14 @@ final class TextInserter {
         // action. We can't restore synchronously because the paste hasn't been
         // consumed yet - see the comment on `restoreDelay` above.
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) { [self] in
-            restorePasteboard(pasteboard, snapshot: snapshot)
+            // Something copied while the paste was in flight (the user, or an
+            // app writing the clipboard), so its contents are now the newest:
+            // restoring the old snapshot over them would silently lose them.
+            if pasteboard.changeCount == ourChangeCount {
+                restorePasteboard(pasteboard, snapshot: snapshot)
+            } else {
+                log.info("Pasteboard changed during a paste - leaving the newer contents in place.")
+            }
             drainNextAction()
         }
     }
@@ -98,10 +107,7 @@ final class TextInserter {
         guard count > 0, let source = CGEventSource(stateID: .combinedSessionState) else { return }
         let backspace: CGKeyCode = 51
         for _ in 0..<count {
-            CGEvent(keyboardEventSource: source, virtualKey: backspace, keyDown: true)?
-                .post(tap: .cghidEventTap)
-            CGEvent(keyboardEventSource: source, virtualKey: backspace, keyDown: false)?
-                .post(tap: .cghidEventTap)
+            postBareKeystroke(backspace, source: source)
             usleep(800)
         }
     }
@@ -112,10 +118,19 @@ final class TextInserter {
     private func sendSpaceKeystroke() {
         guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
         let space: CGKeyCode = 49
-        CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: true)?
-            .post(tap: .cghidEventTap)
-        CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: false)?
-            .post(tap: .cghidEventTap)
+        postBareKeystroke(space, source: source)
+    }
+
+    // Explicit empty flags, like sendCommandV: a new event otherwise inherits
+    // the session's modifier state, which keeps ⌘ latched after our own
+    // synthetic ⌘V and includes a held Right Option. Space would turn into
+    // ⌘Space (Spotlight) and Backspace into ⌘⌫ / ⌥⌫ (delete line / word).
+    private func postBareKeystroke(_ key: CGKeyCode, source: CGEventSource) {
+        for keyDown in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown)
+            event?.flags = []
+            event?.post(tap: .cghidEventTap)
+        }
     }
 
     // ------------------------------------------------------------------

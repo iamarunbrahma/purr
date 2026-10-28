@@ -20,6 +20,8 @@ final class LlamaSession {
         case contextInitFailed
         case tokenizeFailed
         case decodeFailed(code: Int32)
+        // `budget` is how many prompt tokens fit beside the requested response.
+        case promptTooLong(tokens: Int, budget: Int)
         case cancelled
 
         var errorDescription: String? {
@@ -32,6 +34,8 @@ final class LlamaSession {
                 return "Failed to tokenize prompt."
             case .decodeFailed(let code):
                 return "llama_decode failed (code \(code))."
+            case .promptTooLong(let tokens, let budget):
+                return "Prompt is \(tokens) tokens; at most \(budget) fit in the context window."
             case .cancelled:
                 return "Generation was cancelled."
             }
@@ -50,6 +54,7 @@ final class LlamaSession {
     private let model: OpaquePointer
     private let vocab: OpaquePointer
     private let context: OpaquePointer
+    private let contextSize: Int
 
     init(modelPath: String) throws {
         // Must be set before ggml creates the Metal device during the model load
@@ -62,7 +67,7 @@ final class LlamaSession {
         llama_backend_init()
 
         var modelParams = llama_model_default_params()
-        // Offload every block to Metal: Gemma 3 4B at Q4_K_M is ~2.5 GB, which
+        // Offload every block to Metal: Gemma 4 E2B at Q4_0 is ~3.3 GB, which
         // fits the unified-memory GPU partition on every Mac we support (8 GB+).
         modelParams.n_gpu_layers = 999
         modelParams.use_mmap = true
@@ -79,9 +84,10 @@ final class LlamaSession {
         self.vocab = v
 
         var ctxParams = llama_context_default_params()
-        // Covers a 24K-char transcript head/tail window (~6K prompt tokens) plus
-        // a 1000-token response without saturating the KV cache on 8 GB Macs.
-        ctxParams.n_ctx = 4096
+        // Covers a 24K-char transcript head/tail window (~6K prompt tokens of
+        // English) plus a 1000-token response. Gemma 4's sliding-window layers
+        // keep the KV cache small: 8192 costs ~80 MB more than 4096 did.
+        ctxParams.n_ctx = 8192
         ctxParams.n_batch = 512
         // Leave two cores for audio and UI. The cap of 8 mirrors the upstream
         // Swift example - more threads hurt than help on M-series.
@@ -94,6 +100,7 @@ final class LlamaSession {
             throw LlamaError.contextInitFailed
         }
         self.context = c
+        self.contextSize = Int(llama_n_ctx(c))
 
         log.info(
             "Llama model loaded: \(modelPath, privacy: .public) (n_ctx=\(ctxParams.n_ctx, privacy: .public), threads=\(threads, privacy: .public))"
@@ -127,6 +134,14 @@ final class LlamaSession {
         }
         guard actual > 0 else { throw LlamaError.tokenizeFailed }
         tokens = Array(tokens.prefix(Int(actual)))
+
+        // Past the window, llama_decode fails with no free KV slot - in the
+        // prompt, or worse, partway through the response. Refuse up front with
+        // the measured size so the caller can shorten its input and retry.
+        let budget = contextSize - parameters.maxTokens
+        guard tokens.count <= budget else {
+            throw LlamaError.promptTooLong(tokens: tokens.count, budget: budget)
+        }
 
         // 2. Sampler chain, mirroring llama.cpp's chat examples: penalties
         //    first so they apply before temperature warps the distribution.
@@ -173,9 +188,12 @@ final class LlamaSession {
             offset = end
         }
 
-        // 4. Sample a token, convert it, feed it back as a single-token batch.
-        //    Stops on EOG (Gemma 3 emits <end_of_turn>), the cap, or cancellation.
-        var output = ""
+        // 4. Sample a token, keep its bytes, feed it back as a single-token
+        //    batch. Stops on EOG (Gemma 4 emits <turn|>), the cap, or
+        //    cancellation. Bytes rather than Strings accumulate because a
+        //    character outside the vocabulary arrives as several byte tokens,
+        //    each one an incomplete UTF-8 sequence on its own.
+        var output: [UInt8] = []
         var pos = Int32(tokens.count)
         let maxTokens = parameters.maxTokens
 
@@ -185,7 +203,7 @@ final class LlamaSession {
             let newToken = llama_sampler_sample(sampler, context, -1)
             if llama_vocab_is_eog(vocab, newToken) { break }
 
-            output.append(Self.tokenToString(token: newToken, vocab: vocab))
+            output.append(contentsOf: Self.tokenBytes(token: newToken, vocab: vocab))
 
             llamaBatchClear(&batch)
             llamaBatchAdd(&batch, newToken, pos, [0], true)
@@ -195,13 +213,13 @@ final class LlamaSession {
             if stepRC != 0 { throw LlamaError.decodeFailed(code: stepRC) }
         }
 
-        return output
+        return String(decoding: output, as: UTF8.self)
     }
 
-    // token_to_piece may need more than 16 bytes for multi-byte UTF-8; a
-    // negative count is the size to retry with. Partial-UTF-8 pieces are
-    // dropped silently - the next token usually completes the rune.
-    private static func tokenToString(token: llama_token, vocab: OpaquePointer) -> String {
+    // token_to_piece may need more than 16 bytes for a long piece; a negative
+    // count is the size to retry with. A piece can be part of a multi-byte
+    // character, so it stays raw bytes until the whole response is decoded.
+    private static func tokenBytes(token: llama_token, vocab: OpaquePointer) -> [UInt8] {
         var buf = [CChar](repeating: 0, count: 16)
         var written = buf.withUnsafeMutableBufferPointer {
             llama_token_to_piece(vocab, token, $0.baseAddress, Int32($0.count), 0, false)
@@ -213,12 +231,8 @@ final class LlamaSession {
                 llama_token_to_piece(vocab, token, $0.baseAddress, Int32($0.count), 0, false)
             }
         }
-        guard written > 0 else { return "" }
-        // NUL-terminate so String(cString:) stops correctly even when the piece
-        // used every byte of the buffer.
-        var bytes = Array(buf.prefix(Int(written)))
-        bytes.append(0)
-        return String(cString: bytes)
+        guard written > 0 else { return [] }
+        return buf.prefix(Int(written)).map { UInt8(bitPattern: $0) }
     }
 }
 

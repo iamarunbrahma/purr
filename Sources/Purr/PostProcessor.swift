@@ -265,16 +265,21 @@ struct PostProcessor {
                 (#"\bnew line\b\.?"#, "\n"),
                 (#"\btab key\b\.?"#, "\t"),
             ]),
+        // Sentence punctuation also absorbs a mark the ASR model already put on
+        // either side of the spoken command ("questions, question mark." ->
+        // "questions?", not "questions,?"). Spaces are only taken along with a
+        // leading mark: a bare "close quote period" must keep its " ." apart so
+        // the quote's own `\.?` can't swallow the period.
         CommandCategory(
             replacements: [
-                (#"\bquestion mark\b\.?"#, "?"),
-                (#"\bexclamation (?:point|mark)\b\.?"#, "!"),
-                (#"\bfull stop\b\.?"#, "."),
-                (#"\bperiod\b\.?"#, "."),
-                (#"\bcomma\b\.?"#, ","),
-                (#"\bsemicolon\b\.?"#, ";"),
-                (#"\bcolon\b\.?"#, ":"),
-                (#"\bellipsis\b\.?"#, "…"),
+                (#"(?:[,.;:][ \t]*)?\bquestion mark\b[,.;:?!]?"#, "?"),
+                (#"(?:[,.;:][ \t]*)?\bexclamation (?:point|mark)\b[,.;:?!]?"#, "!"),
+                (#"(?:[,.;:][ \t]*)?\bfull stop\b[,.;:?!]?"#, "."),
+                (#"(?:[,.;:][ \t]*)?\bperiod\b[,.;:?!]?"#, "."),
+                (#"(?:[,.;:][ \t]*)?\bcomma\b[,.;:?!]?"#, ","),
+                (#"(?:[,.;:][ \t]*)?\bsemicolon\b[,.;:?!]?"#, ";"),
+                (#"(?:[,.;:][ \t]*)?\bcolon\b[,.;:?!]?"#, ":"),
+                (#"(?:[,.;:][ \t]*)?\bellipsis\b[,.;:?!]?"#, "…"),
             ]),
         CommandCategory(
             replacements: [

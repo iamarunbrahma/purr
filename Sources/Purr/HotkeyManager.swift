@@ -12,6 +12,13 @@ import os.log
 //     "any option/command/etc."
 //
 // CGEventTap sees the device-side code for each right modifier separately.
+//
+// Carbon is still the fallback for key combinations under Secure Input (a
+// password field, Terminal's Secure Keyboard Entry, or loginwindow, which on
+// macOS 26.5 leaks it at every screen lock until logout). It hides
+// keyDown/keyUp from every tap while flagsChanged still flows, so bare
+// modifiers keep working but combinations go dead - except as Carbon hotkeys,
+// which Secure Input doesn't block. They're registered only while it's on.
 final class HotkeyManager {
     typealias Callback = () -> Void
 
@@ -36,6 +43,14 @@ final class HotkeyManager {
     // voice-edit while dictation is in toggle mode must not interfere.
     private var heldDown: [Action: Bool] = [:]
     private var dictationSuspended = false
+
+    private var secureInputPoll: Timer?
+    private var secureInputFallbackOn = false
+    private var carbonHandler: EventHandlerRef?
+    private var carbonHotkeys: [EventHotKeyRef] = []
+    // Combinations Carbon refused while Secure Input is on (another app owns
+    // the shortcut), so they're dead until it clears. Shown in the menu.
+    private(set) var secureInputGaps: [String] = []
 
     private let log = Logger(subsystem: "com.arunbrahma.hello", category: "hotkey")
 
@@ -98,6 +113,11 @@ final class HotkeyManager {
         self.tap = tap
         self.runLoopSource = source
         log.info("Hotkey tap installed with \(self.bindings.count, privacy: .public) bindings.")
+
+        syncSecureInputFallback()
+        let poll = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.syncSecureInputFallback() }
+        RunLoop.main.add(poll, forMode: .common)
+        secureInputPoll = poll
     }
 
     func uninstall() {
@@ -109,7 +129,109 @@ final class HotkeyManager {
         }
         tap = nil
         runLoopSource = nil
+        secureInputPoll?.invalidate()
+        secureInputPoll = nil
+        unregisterCarbonHotkeys()
+        if let handler = carbonHandler { RemoveEventHandler(handler) }
+        carbonHandler = nil
         heldDown = heldDown.mapValues { _ in false }
+    }
+
+    // ------------------------------------------------------------------
+    // Secure Input fallback
+    // ------------------------------------------------------------------
+
+    private func syncSecureInputFallback() {
+        let secure = IsSecureEventInputEnabled()
+        if secure, !secureInputFallbackOn {
+            registerCarbonHotkeys()
+        } else if !secure, secureInputFallbackOn {
+            unregisterCarbonHotkeys()
+            log.info("Secure Input cleared - key combinations back on the event tap.")
+        }
+    }
+
+    private func registerCarbonHotkeys() {
+        if carbonHandler == nil {
+            var types = [
+                EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+            ]
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                { _, event, userData in
+                    guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+                    var id = EventHotKeyID()
+                    let status = GetEventParameter(
+                        event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                        nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+                    guard status == noErr, id.signature == OSType(0x5055_5252) else {
+                        return OSStatus(eventNotHandledErr)
+                    }
+                    let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
+                    manager.handleCarbonHotkey(index: Int(id.id), pressed: GetEventKind(event) == UInt32(kEventHotKeyPressed))
+                    return noErr
+                },
+                types.count, &types, Unmanaged.passUnretained(self).toOpaque(), &carbonHandler)
+        }
+        secureInputFallbackOn = true
+        for (index, binding) in bindings.enumerated() {
+            guard let keyCode = binding.hotkey.keyCode else { continue }
+            // A hold that began on the tap can't see its keyUp any more, so end
+            // it now rather than leave the binding stuck "held".
+            if heldDown[binding.action] == true {
+                heldDown[binding.action] = false
+                DispatchQueue.main.async { binding.onRelease() }
+            }
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: OSType(0x5055_5252), id: UInt32(index))  // 'PURR'
+            let status = RegisterEventHotKey(
+                UInt32(keyCode), Self.carbonModifiers(binding.hotkey.modifiers), id,
+                GetApplicationEventTarget(), 0, &ref)
+            if status == noErr, let ref {
+                carbonHotkeys.append(ref)
+            } else {
+                secureInputGaps.append(binding.hotkey.displayName)
+                log.error(
+                    "Secure Input fallback could not register \(binding.hotkey.displayName, privacy: .public) (status \(status, privacy: .public)).")
+            }
+        }
+        log.info(
+            "Secure Input is on - \(self.carbonHotkeys.count, privacy: .public) key combinations moved to Carbon hotkeys.")
+    }
+
+    private func unregisterCarbonHotkeys() {
+        carbonHotkeys.forEach { UnregisterEventHotKey($0) }
+        carbonHotkeys.removeAll()
+        secureInputGaps.removeAll()
+        secureInputFallbackOn = false
+    }
+
+    // Shares heldDown with the tap, so a press both of them see (in the poll
+    // interval after Secure Input clears) still fires once.
+    private func handleCarbonHotkey(index: Int, pressed: Bool) {
+        guard bindings.indices.contains(index) else { return }
+        let binding = bindings[index]
+        if dictationSuspended, binding.action == .transcribe { return }
+        let wasDown = heldDown[binding.action] ?? false
+        if pressed, !wasDown {
+            heldDown[binding.action] = true
+            log.debug("Carbon press: action=\(String(describing: binding.action), privacy: .public)")
+            DispatchQueue.main.async { binding.onPress() }
+        } else if !pressed, wasDown {
+            heldDown[binding.action] = false
+            log.debug("Carbon release: action=\(String(describing: binding.action), privacy: .public)")
+            DispatchQueue.main.async { binding.onRelease() }
+        }
+    }
+
+    private static func carbonModifiers(_ flags: CGEventFlags) -> UInt32 {
+        var mods = 0
+        if flags.contains(.maskCommand) { mods |= cmdKey }
+        if flags.contains(.maskAlternate) { mods |= optionKey }
+        if flags.contains(.maskControl) { mods |= controlKey }
+        if flags.contains(.maskShift) { mods |= shiftKey }
+        return UInt32(mods)
     }
 
     // ------------------------------------------------------------------

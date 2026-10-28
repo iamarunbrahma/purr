@@ -14,9 +14,9 @@ import os.log
 //   picked, so English users never pay for the extra download - dictation
 //   and voice-edit always stay on v2.
 // * **Smart typing (live)** → `StreamingEouAsrManager`, Parakeet EOU at
-//   320ms chunks. Partial-transcript callback fires every chunk so the
-//   consumer can diff + type live; a separate EOU callback marks sustained
-//   silence, where PostProcessor runs on the completed utterance.
+//   320ms chunks. Its partial transcript drives the live preview and a pause
+//   ends each utterance, which the batch model re-transcribes before
+//   PostProcessor runs on it.
 @MainActor
 final class ParakeetEngine: TranscriptionEngine {
     nonisolated let supportsStreaming: Bool = true
@@ -362,13 +362,12 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 }
 
-// Streaming session backed by FluidAudio's StreamingEouAsrManager. Two
-// callbacks feed one event stream: `setPartialCallback` (320ms cadence,
-// full accumulated transcript - diffed against the last emission since
-// EOU's decoder is append-only) and `setEouCallback` (fires after
-// `eouDebounceMs` of silence with the raw transcript at that boundary).
-// `finish()` always emits one final `.endOfUtterance` so trailing audio is
-// reconciled even when no in-stream EOU fired (common on short utterances).
+// Streaming session backed by FluidAudio's StreamingEouAsrManager.
+// `setPartialCallback` (320ms cadence, full accumulated transcript - diffed
+// against the last emission since EOU's decoder is append-only) drives the
+// live preview. feed() ends an utterance at a pause, and `finish()` emits a
+// final `.endOfUtterance` for anything heard since the last one. Each
+// boundary carries that utterance's audio for the batch-quality pass.
 @MainActor
 final class StreamingEouAsrSession: StreamingSession {
     nonisolated let events: AsyncStream<StreamingEvent>
@@ -377,6 +376,26 @@ final class StreamingEouAsrSession: StreamingSession {
     private let inputFormat: AVAudioFormat
     private let diff = PartialDiff()
     private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet.eou")
+    // Audio since the current utterance began, handed out with its
+    // .endOfUtterance. Positions count samples fed since start():
+    // `utteranceStart` is the utterance's first sample, `managerOrigin` the
+    // manager's time zero (token timestamps count from its last reset).
+    private var utteranceSamples: [Float] = []
+    private var utteranceStart = 0
+    private var samplesFed = 0
+    private var managerOrigin = 0
+    private var activity = SpeechActivity()
+    // FluidAudio's EOU head rarely fires on ordinary room noise, so ~1s with
+    // no newly decoded words also ends the utterance - unless the speech
+    // around the last word is still going (decoding stalls mid-phrase on
+    // fillers), for up to ~3s.
+    private var samplesSinceLastWord = 0
+    private var lastTokenSample = 0
+    private static let pauseSampleCount = 16_000
+    private static let maxPauseSampleCount = 48_000
+    private static let stillTalkingSampleCount = 4_800
+    // One 320ms-mode chunk window, replayed after an EOU reset.
+    private static let replaySampleCount = 10_240
 
     init(manager: StreamingEouAsrManager) {
         self.manager = manager
@@ -401,17 +420,14 @@ final class StreamingEouAsrSession: StreamingSession {
     }
 
     func start() async throws {
-        // Handlers stay synchronous - a Task hop would race finish()'s
-        // continuation.finish() and drop the last partial / EOU signal.
+        // The handler stays synchronous - a Task hop would race finish()'s
+        // continuation.finish() and drop the last partial.
         let diff = self.diff
         let continuation = self.continuation
         await manager.setPartialCallback { full in
             if let suffix = diff.consume(full) {
                 continuation.yield(.partial(suffix: suffix))
             }
-        }
-        await manager.setEouCallback { rawAccumulated in
-            continuation.yield(.endOfUtterance(rawAccumulated: rawAccumulated))
         }
         log.info("EOU streaming session started.")
     }
@@ -420,21 +436,91 @@ final class StreamingEouAsrSession: StreamingSession {
         guard let buffer = makeBuffer(from: samples) else { return }
         try await manager.appendAudio(buffer)
         try await manager.processBufferedAudio()
-        // FluidAudio's EOU detector latches until reset() - re-arm after every
-        // utterance, which also clears the transcript so the next sentence
-        // decodes fresh instead of appending to the previous one.
-        if await manager.eouDetected {
-            await manager.reset()
-            diff.reset()
+        utteranceSamples.append(contentsOf: samples)
+        samplesFed += samples.count
+        activity.process(samples)
+        if diff.takeNewWords() {
+            samplesSinceLastWord = 0
+            let lastTokenMs = await manager.getTokenTimestampsMs().last ?? 0
+            lastTokenSample = managerOrigin + lastTokenMs * 16
+        } else {
+            samplesSinceLastWord += samples.count
+        }
+
+        // FluidAudio's EOU detector latches until reset(), so an EOU always
+        // resets, but only once the speech has paused as long as a pause
+        // needs: its head can call a pause over speech it decoded nothing for
+        // ("scratch that" said quickly), and cutting there splits the phrase.
+        // A pause leaves the decoder running: reset() drops the audio
+        // buffered for the next chunk, which can already hold the next
+        // sentence's first word.
+        let speechPaused = utteranceSpeechEnd.map { samplesFed - $0 >= Self.pauseSampleCount } ?? true
+        if await manager.eouDetected, speechPaused {
+            try await endUtterance(resetDecoder: true)
+        } else if diff.hasPendingText {
+            let stillTalking =
+                activity.speechEnd(around: lastTokenSample) > samplesFed - Self.stillTalkingSampleCount
+            if samplesSinceLastWord >= (stillTalking ? Self.maxPauseSampleCount : Self.pauseSampleCount) {
+                try await endUtterance(resetDecoder: false)
+            }
+        } else if heardSpeech, samplesFed - activity.lastSpeechEnd >= Self.pauseSampleCount {
+            // Speech the streaming model decoded nothing for - the batch
+            // pass still gets to read it.
+            try await endUtterance(resetDecoder: false)
+        }
+    }
+
+    // Whether the current utterance holds speech by energy, decoded or not.
+    private var heardSpeech: Bool { activity.lastSpeechEnd > utteranceStart }
+
+    // Where the current utterance's speech stopped: around its last decoded
+    // word, else the last speech heard; nil when it holds neither.
+    private var utteranceSpeechEnd: Int? {
+        if diff.hasPendingText { return activity.speechEnd(around: lastTokenSample) }
+        return heardSpeech ? activity.lastSpeechEnd : nil
+    }
+
+    // Hands the utterance's text and audio to the consumer. A pause is only
+    // noticed ~1s after the last decoded word, when the next sentence may
+    // already have begun, so the audio is cut by where the speech actually
+    // stopped and the rest stays with the next utterance. An EOU over
+    // silence only re-arms the detector.
+    private func endUtterance(resetDecoder: Bool) async throws {
+        let speechEnd = utteranceSpeechEnd
+        let text = diff.commitPending()
+        if let speechEnd {
+            let cut = activity.cutPoint(after: speechEnd, limit: samplesFed)
+            let count = min(max(cut - utteranceStart, 0), utteranceSamples.count)
+            continuation.yield(.endOfUtterance(rawAccumulated: text, audio: Array(utteranceSamples[..<count])))
+            utteranceSamples.removeFirst(count)
+            utteranceStart += count
+            activity.dropRuns(endingBefore: utteranceStart)
+        }
+        samplesSinceLastWord = 0
+        guard resetDecoder else { return }
+
+        await manager.reset()
+        diff.reset()
+        // reset() also drops the audio buffered for the next chunk - replay
+        // the tail so a word already starting there isn't clipped. Only audio
+        // not yet handed out, so nothing is decoded twice.
+        let replay = Array(utteranceSamples.suffix(Self.replaySampleCount))
+        managerOrigin = samplesFed - replay.count
+        if let buffer = makeBuffer(from: replay) {
+            try await manager.appendAudio(buffer)
         }
     }
 
     func finish() async throws {
         // Flushes the final chunk (one more partialCallback) before
-        // returning; the trailing .endOfUtterance covers utterances
-        // where no in-stream EOU ever fired.
-        let final = try await manager.finish()
-        continuation.yield(.endOfUtterance(rawAccumulated: final))
+        // returning. Audio with nothing decoded and no speech heard is
+        // dropped rather than run through the batch model, which can
+        // hallucinate a sentence over bare room noise.
+        _ = try await manager.finish()
+        let text = diff.commitPending()
+        if !text.isEmpty || heardSpeech {
+            continuation.yield(.endOfUtterance(rawAccumulated: text, audio: utteranceSamples))
+        }
         continuation.finish()
         log.info("EOU streaming session finished.")
     }
@@ -468,27 +554,68 @@ final class StreamingEouAsrSession: StreamingSession {
 private final class PartialDiff: @unchecked Sendable {
     private let lock = NSLock()
     private var lastEmitted: String = ""
+    // How much of lastEmitted earlier utterances already took, and whether
+    // anything was decoded since.
+    private var committedCount = 0
+    private var pending = false
+    private var newWords = false
 
     func consume(_ full: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        // The transcript only grows within an utterance, so this is normally
+        // FluidAudio only calls back when a chunk decoded new tokens.
+        newWords = true
+        // The transcript only grows until a reset, so this is normally
         // a clean suffix; the prefix branch is a safety hatch for any
         // out-of-order/revised emission.
         guard full.hasPrefix(lastEmitted) else {
             lastEmitted = full
+            committedCount = min(committedCount, full.count)
+            pending = full.count > committedCount
             return full.isEmpty ? nil : full
         }
         guard full.count > lastEmitted.count else { return nil }
-        let suffix = String(full.dropFirst(lastEmitted.count))
+        var suffix = String(full.dropFirst(lastEmitted.count))
         lastEmitted = full
+        // The first words after a boundary start a fresh preview.
+        if !pending { suffix = String(suffix.drop(while: \.isWhitespace)) }
+        guard !suffix.isEmpty else { return nil }
+        pending = true
         return suffix
     }
 
-    // Called at each EOU boundary so the next utterance diffs from empty.
+    // The text decoded since the last call (trimmed), now marked as taken.
+    func commitPending() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let text = lastEmitted.dropFirst(committedCount).trimmingCharacters(in: .whitespaces)
+        committedCount = lastEmitted.count
+        pending = false
+        return text
+    }
+
+    // Whether anything was decoded since the last commitPending().
+    var hasPendingText: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending
+    }
+
+    // Called when the decoder resets, so the next utterance diffs from empty.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
         lastEmitted = ""
+        committedCount = 0
+        pending = false
+    }
+
+    // Whether any words were decoded since the last call.
+    func takeNewWords() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = newWords
+        newWords = false
+        return result
     }
 }

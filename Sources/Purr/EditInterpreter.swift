@@ -14,13 +14,14 @@ import FoundationModels
 // the model returns full text.
 //
 // Both backends are asked for the same fenced text protocol; `parsePlan`
-// decodes it. Apple Foundation Models (macOS 26+) is preferred; Gemma 3 4B via
+// decodes it. Apple Foundation Models (macOS 26+) is preferred; Gemma 4 E2B via
 // llama.cpp is the macOS 14-25 path, sharing the summariser's weights.
 @MainActor
 enum EditInterpreter {
-    // Both backends cap near a 4096-token window; 4000 characters leaves room
-    // for the instructions and the response. Enforced at hotkey press so an
-    // oversized selection is refused before recording starts.
+    // Apple FM's 4096-token window is the tighter of the two backends; 4000
+    // characters leaves room for the instructions and the response. Enforced
+    // at hotkey press so an oversized selection is refused before recording
+    // starts.
     static let maxSelectionCharacters = 4000
 
     enum Failure: LocalizedError {
@@ -184,6 +185,9 @@ enum EditInterpreter {
             watchdog.cancel()
         } catch {
             watchdog.cancel()
+            // Scripts that tokenize densely can overflow even under the
+            // character cap.
+            if case LlamaSession.LlamaError.promptTooLong = error { throw Failure.selectionTooLong }
             throw Failure.backend(error)
         }
 
@@ -221,17 +225,26 @@ enum EditInterpreter {
                 throw Failure.interpretationFailed
             }
 
+            // Whole words first, so a short find ("we") can't rewrite the
+            // inside of a longer word ("week"). Bare substrings only when no
+            // whole word matches: a partial-word find, or a script written
+            // without spaces.
+            let attempts: [(wholeWord: Bool, options: NSRegularExpression.Options)] = [
+                (true, []), (true, .caseInsensitive), (false, []), (false, .caseInsensitive),
+            ]
             var result = selection
             var anyApplied = false
             for span in plan.edits {
                 guard !span.find.isEmpty else { continue }
-                if result.contains(span.find) {
-                    result = result.replacingOccurrences(of: span.find, with: span.replace)
-                    anyApplied = true
-                } else if result.range(of: span.find, options: .caseInsensitive) != nil {
-                    result = result.replacingOccurrences(
-                        of: span.find, with: span.replace, options: .caseInsensitive)
-                    anyApplied = true
+                for attempt in attempts {
+                    if let replaced = replacing(
+                        span.find, with: span.replace, in: result,
+                        wholeWord: attempt.wholeWord, options: attempt.options)
+                    {
+                        result = replaced
+                        anyApplied = true
+                        break
+                    }
                 }
             }
             // No span matched — the model hallucinated the find text or ASR
@@ -239,6 +252,23 @@ enum EditInterpreter {
             guard anyApplied else { throw Failure.interpretationFailed }
             return result
         }
+    }
+
+    // Every occurrence of `find` replaced, or nil when there is none. A
+    // whole-word match has no letter or digit directly beside it.
+    private static func replacing(
+        _ find: String, with replacement: String, in text: String,
+        wholeWord: Bool, options: NSRegularExpression.Options
+    ) -> String? {
+        func isWordCharacter(_ c: Character?) -> Bool { c.map { $0.isLetter || $0.isNumber } ?? false }
+        var pattern = NSRegularExpression.escapedPattern(for: find)
+        if wholeWord, isWordCharacter(find.first) { pattern = #"(?<![\p{L}\p{N}])"# + pattern }
+        if wholeWord, isWordCharacter(find.last) { pattern += #"(?![\p{L}\p{N}])"# }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard regex.firstMatch(in: text, range: range) != nil else { return nil }
+        return regex.stringByReplacingMatches(
+            in: text, range: range, withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
     }
 
     // MARK: - Deterministic post-processing
@@ -389,6 +419,35 @@ enum EditInterpreter {
         @@REWRITE@@
         the full edited passage
         @@END@@
+
+        Examples for the passage "Our team meets on Tuesday. Bring the slides.":
+
+        Instruction "Change Tuesday to Thursday":
+        SCOPE: targeted
+        @@FIND@@
+        Tuesday
+        @@REPLACE@@
+        Thursday
+        @@END@@
+
+        Instruction "Delete the last sentence":
+        SCOPE: targeted
+        @@FIND@@
+        Bring the slides.
+        @@REPLACE@@
+        @@END@@
+
+        Instruction "Capitalize the first letter of each word":
+        SCOPE: holistic
+        @@REWRITE@@
+        Our Team Meets On Tuesday. Bring The Slides.
+        @@END@@
+
+        Instruction "Make it sound friendlier":
+        SCOPE: holistic
+        @@REWRITE@@
+        Our team gets together on Tuesday. Don't forget to bring the slides!
+        @@END@@
         """
 
     private static func userPrompt(instruction: String, selection: String) -> String {
@@ -405,23 +464,21 @@ enum EditInterpreter {
         """
     }
 
-    // Gemma takes role, format, and request in one user turn: it has no system
-    // role. The BOS token is added by the tokenizer, <end_of_turn> closes the
-    // user turn.
+    // Gemma 4's chat template: the role goes in the system turn, format and
+    // request in the user turn. The BOS token is added by the tokenizer and
+    // <turn|> closes each turn. No <|think|> in the system turn, so the model
+    // answers without a reasoning block.
     private static func gemmaPrompt(instruction: String, selection: String) -> String {
-        let body = """
-            \(systemPrompt)
+        """
+        <|turn>system
+        \(systemPrompt)<turn|>
+        <|turn>user
+        \(formatSpec)
 
-            \(formatSpec)
+        \(userPrompt(instruction: instruction, selection: selection))<turn|>
+        <|turn>model
 
-            \(userPrompt(instruction: instruction, selection: selection))
-            """
-        return """
-            <start_of_turn>user
-            \(body)<end_of_turn>
-            <start_of_turn>model
-
-            """
+        """
     }
 }
 

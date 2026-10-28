@@ -5,7 +5,7 @@ import os.log
 // it. llama.cpp's context is not reentrant: a meeting summary and a voice edit
 // decoding at the same time would corrupt the shared KV cache. Being an actor,
 // each `generate` runs to completion before the next begins, off the main
-// thread. The shared instance also keeps the ~2.5 GB model loaded at most once
+// thread. The shared instance also keeps the ~3.3 GB model loaded at most once
 // however many features touch it.
 actor LlamaRuntime {
     static let shared = LlamaRuntime()
@@ -35,7 +35,7 @@ actor LlamaRuntime {
     }
 
     // MUST run before the on-disk weights are deleted, or the next generate()
-    // reuses a session pointing at a removed file and leaks ~2.5 GB.
+    // reuses a session pointing at a removed file and leaks ~3.3 GB.
     func unload() {
         session = nil
         log.info("Llama runtime unloaded.")

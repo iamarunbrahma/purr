@@ -15,15 +15,16 @@ protocol TranscriptionEngine: AnyObject {
 //
 // * `.partial(suffix:)` — verbatim new tokens since the last partial,
 //   append-only with the model's native spacing.
-// * `.endOfUtterance(rawAccumulated:)` — silence boundary or final flush. The
-//   consumer subtracts the previous boundary's raw text to isolate the completed
-//   utterance, runs PostProcessor, and reconciles the typed text in place.
+// * `.endOfUtterance(rawAccumulated:audio:)` - a pause boundary or the final
+//   flush: the streaming model's text for the finished utterance (empty when
+//   it heard speech but decoded none) plus that utterance's audio, so the
+//   consumer can re-transcribe it with the batch model before pasting.
 //
 // A single AsyncStream guarantees ordering between partial typing and EOU
 // corrections.
 enum StreamingEvent: Equatable {
     case partial(suffix: String)
-    case endOfUtterance(rawAccumulated: String)
+    case endOfUtterance(rawAccumulated: String, audio: [Float])
 }
 
 protocol StreamingSession: AnyObject {

@@ -1,4 +1,5 @@
 import CEcho
+import Foundation
 
 // Acoustic echo cancellation for meeting mode.
 //
@@ -65,5 +66,34 @@ enum EchoCanceller {
 
         output.removeLast(padded - mic.count)
         return output
+    }
+
+    // Over `start`..`end` seconds, padded 40 ms for word-timing jitter: how
+    // many dB cancelling took out of `mic`, how loud `cleaned` is, and how
+    // loud `reference` was from one echo tail before - anything played that
+    // recently can still be echoing. Levels are in dBFS.
+    static func cancellation(
+        mic: [Float], cleaned: [Float], reference: [Float], from start: Double, to end: Double
+    ) -> (removed: Double, level: Double, reference: Double) {
+        let pad = 0.04
+        let lower = max(0, Int((start - pad) * Double(sampleRate)))
+        let upper = min(mic.count, cleaned.count, Int((end + pad) * Double(sampleRate)))
+        var micEnergy = 1e-9
+        var cleanedEnergy = 1e-9
+        for i in lower..<max(lower, upper) {
+            micEnergy += Double(mic[i] * mic[i])
+            cleanedEnergy += Double(cleaned[i] * cleaned[i])
+        }
+        let tailStart = max(0, lower - filterLength)
+        let tailEnd = max(tailStart, min(reference.count, upper))
+        var referenceEnergy = 1e-9
+        for i in tailStart..<tailEnd {
+            referenceEnergy += Double(reference[i] * reference[i])
+        }
+        return (
+            10 * log10(micEnergy / cleanedEnergy),
+            10 * log10(cleanedEnergy / Double(max(1, upper - lower))),
+            10 * log10(referenceEnergy / Double(max(1, tailEnd - tailStart)))
+        )
     }
 }
