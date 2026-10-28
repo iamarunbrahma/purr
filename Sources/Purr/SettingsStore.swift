@@ -2,12 +2,10 @@ import Combine
 import CoreGraphics
 import Foundation
 
-// Persistent user settings, backed by UserDefaults.
-//
-// Hotkey is stored as two scalars - keyCode + modifierMask - because that's
-// the granularity CGEventTap reports. A bare-modifier hotkey (no normal key,
-// e.g. "hold Right Option") is represented by keyCode == nil and a single
-// bit set in modifierMask.
+// Persistent user settings, backed by UserDefaults. Hotkey is stored as two
+// scalars - keyCode + modifierMask - the granularity CGEventTap reports. A
+// bare-modifier hotkey ("hold Right Option") is keyCode == nil with a
+// single bit set in modifierMask.
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
@@ -38,6 +36,8 @@ final class SettingsStore: ObservableObject {
         static let summaryBackend = "feature.summaryBackend"
         static let meetingsFolderPath = "meetings.folderPath"
         static let systemAudioNoticeShown = "meetings.systemAudioNoticeShown"
+        static let meetingLanguage = "meetings.language"
+        static let saveMeetingAudio = "meetings.saveAudio"
     }
 
     // Which on-device LLM produces the meeting summary. Apple FM is the
@@ -100,12 +100,15 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(meetingEnabled, forKey: Keys.meetingEnabled) }
     }
 
-    // Whether the floating "Meeting · 0:00" recording pill (with its live
-    // waveform) is shown while a meeting records. When off, the meeting still
-    // records and the menu bar shows a recording indicator - only the
-    // on-screen pill is suppressed; transcribing/summary/error HUDs still show.
+    // When off, the meeting still records and the menu bar shows an
+    // indicator - only the floating waveform pill is suppressed.
     @Published var showMeetingHUD: Bool {
         didSet { defaults.set(showMeetingHUD, forKey: Keys.showMeetingHUD) }
+    }
+
+    // Off by default: audio is larger and more sensitive than a transcript.
+    @Published var saveMeetingAudio: Bool {
+        didSet { defaults.set(saveMeetingAudio, forKey: Keys.saveMeetingAudio) }
     }
 
     @Published var voiceEditEnabled: Bool {
@@ -124,9 +127,7 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(onboardingDone, forKey: Keys.onboardingDone) }
     }
 
-    // Set once after we warn the user that a meeting captured silent system
-    // audio (output was active but the System Audio Recording permission is
-    // off). Persisted so the one-time notice never nags on later meetings.
+    // Set after the silent-system-audio warning shows once, so it never nags again.
     var systemAudioNoticeShown: Bool {
         get { defaults.bool(forKey: Keys.systemAudioNoticeShown) }
         set { defaults.set(newValue, forKey: Keys.systemAudioNoticeShown) }
@@ -136,28 +137,27 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(engine.rawValue, forKey: Keys.engine) }
     }
 
-    // Whisper-only: when on, transcription runs the X→English translate task
-    // instead of plain same-language transcription. Inert on Parakeet and on
-    // Whisper models that can't translate (turbo / English-only) — the
-    // toggle is gated in Settings and WhisperEngine re-checks
-    // ModelManager.supportsTranslation before honouring it.
+    // Whisper-only: runs the X→English translate task instead of same-language
+    // transcription. Inert on Parakeet and on models that can't translate.
     @Published var translateToEnglish: Bool {
         didSet { defaults.set(translateToEnglish, forKey: Keys.translateToEnglish) }
     }
 
-    // Source language for Whisper translation. Empty string = auto-detect.
-    // Pinning a language skips Whisper's audio-based detection, which is
-    // unreliable on short utterances. Consulted only when translateToEnglish
-    // is on; valid values are WhisperLanguage codes.
+    // Empty = auto-detect. Pinning skips Whisper's unreliable-on-short-clips
+    // audio detection. Consulted only when translateToEnglish is on.
     @Published var translationSourceLanguage: String {
         didSet { defaults.set(translationSourceLanguage, forKey: Keys.translationSourceLanguage) }
     }
 
-    // Smart typing = real-time streaming + word-by-word insertion at the
-    // cursor as the user speaks. Only meaningful with a streaming-capable
-    // engine (Parakeet). When the active engine doesn't support streaming
-    // and this is on, the coordinator transparently falls back to batch
-    // and surfaces a hint in the HUD.
+    // Empty string = English (Parakeet v2); otherwise a ParakeetLanguage code
+    // that routes meetings through the multilingual v3 model instead.
+    @Published var meetingLanguage: String {
+        didSet { defaults.set(meetingLanguage, forKey: Keys.meetingLanguage) }
+    }
+
+    // Real-time streaming + word-by-word insertion. Only meaningful with a
+    // streaming-capable engine (Parakeet); otherwise the coordinator falls
+    // back to batch and surfaces a hint in the HUD.
     @Published var smartTyping: Bool {
         didSet { defaults.set(smartTyping, forKey: Keys.smartTyping) }
     }
@@ -170,9 +170,8 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(trimFillers, forKey: Keys.trimFillers) }
     }
 
-    // Off until the user has explicitly downloaded the GGUF model AND
-    // opted in (macOS < 26), or until Apple Intelligence is available on
-    // macOS 26+. We never run a 2.5 GB download by surprise.
+    // Off until the GGUF model is downloaded and opted in (macOS < 26) or
+    // Apple Intelligence is available (26+) - never a 2.5GB surprise download.
     @Published var summarizeMeetings: Bool {
         didSet { defaults.set(summarizeMeetings, forKey: Keys.summarizeMeetings) }
     }
@@ -181,28 +180,21 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(summaryBackend.rawValue, forKey: Keys.summaryBackend) }
     }
 
-    // Where meeting transcripts (and their .summary.md sidecars) are saved.
-    // Empty string = unset, which resolves to `defaultMeetingsDirectory` -
-    // a folder under ~/Library/Application Support that needs no TCC consent,
-    // so a save never trips a permission prompt. A non-empty path is a
-    // user-chosen folder; if it ever becomes unwritable, MeetingDocument
-    // falls back to the default so a transcript is never lost.
+    // Empty = unset, resolves to `defaultMeetingsDirectory` (no TCC consent
+    // needed). A non-empty user-chosen path that becomes unwritable falls
+    // back to the default in MeetingDocument, so a transcript is never lost.
     @Published var meetingsFolderPath: String {
         didSet { defaults.set(meetingsFolderPath, forKey: Keys.meetingsFolderPath) }
     }
 
-    // Default save location: ~/Library/Application Support/Purr/Purr Meetings.
-    // Matches the App Support convention already used for models, and unlike
-    // ~/Documents it is not TCC-protected, so the app can always create and
-    // write here without a consent prompt.
+    // Unlike ~/Documents, not TCC-protected - writable with no consent prompt.
     static var defaultMeetingsDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appendingPathComponent("Purr/Purr Meetings", isDirectory: true)
     }
 
-    // Custom dictionary maps spoken-form → preferred-form, applied as a
-    // case-insensitive whole-word post-process on every transcript.
-    // Useful for proper nouns and brand spellings the model gets wrong.
+    // Spoken-form → preferred-form, case-insensitive whole-word post-process
+    // on every transcript. Useful for proper nouns and brand spellings.
     @Published var dictionary: [DictionaryEntry] {
         didSet {
             if let data = try? JSONEncoder().encode(dictionary) {
@@ -211,9 +203,8 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    // Custom voice commands map a spoken phrase → literal replacement text,
-    // applied in the voice-command post-processing pass alongside the
-    // built-in commands and gated by the same `voiceCommands` toggle.
+    // Spoken phrase → literal replacement, alongside the built-in commands
+    // and gated by the same `voiceCommands` toggle.
     @Published var customVoiceCommands: [VoiceCommandEntry] {
         didSet {
             if let data = try? JSONEncoder().encode(customVoiceCommands) {
@@ -222,10 +213,8 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    // Custom filler words the user wants stripped, applied in the filler-trim
-    // pass after the built-in hesitations and gated by the same `trimFillers`
-    // toggle. Lets the user opt into removing words the built-in pass leaves
-    // alone ("like", "you know", "basically", …).
+    // Extra words to strip beyond the built-ins ("like", "you know", …),
+    // gated by the same `trimFillers` toggle.
     @Published var customFillerWords: [FillerWordEntry] {
         didSet {
             if let data = try? JSONEncoder().encode(customFillerWords) {
@@ -253,6 +242,7 @@ final class SettingsStore: ObservableObject {
         self.engine = Engine(rawValue: storedEngine) ?? .parakeet
         self.translateToEnglish = defaults.object(forKey: Keys.translateToEnglish) as? Bool ?? false
         self.translationSourceLanguage = defaults.string(forKey: Keys.translationSourceLanguage) ?? ""
+        self.meetingLanguage = defaults.string(forKey: Keys.meetingLanguage) ?? ""
         self.smartTyping = defaults.object(forKey: Keys.smartTyping) as? Bool ?? false
         self.voiceCommands = defaults.object(forKey: Keys.voiceCommands) as? Bool ?? true
         self.trimFillers = defaults.object(forKey: Keys.trimFillers) as? Bool ?? true
@@ -298,6 +288,7 @@ final class SettingsStore: ObservableObject {
         )
         self.meetingEnabled = defaults.object(forKey: Keys.meetingEnabled) as? Bool ?? false
         self.showMeetingHUD = defaults.object(forKey: Keys.showMeetingHUD) as? Bool ?? true
+        self.saveMeetingAudio = defaults.object(forKey: Keys.saveMeetingAudio) as? Bool ?? false
         self.voiceEditEnabled = defaults.object(forKey: Keys.voiceEditEnabled) as? Bool ?? false
 
         // Seed the defaults so a fresh launch lands on the documented hotkey even if nothing was stored yet.
@@ -306,10 +297,8 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    // Returns every user-facing preference to its first-launch defaults.
-    // Leaves transitional state (onboardingDone) and disk artifacts
-    // (downloaded models) alone - the user can clear those explicitly via
-    // the model rows. didSet on each @Published var handles persistence.
+    // Leaves onboardingDone and downloaded models alone - those clear
+    // separately via the model rows.
     func resetToDefaults() {
         hotkey = .defaultRightOption
         hotkeyMode = .holdToTalk
@@ -317,11 +306,13 @@ final class SettingsStore: ObservableObject {
         voiceEditHotkey = .defaultVoiceEdit
         meetingEnabled = false
         showMeetingHUD = true
+        saveMeetingAudio = false
         voiceEditEnabled = false
         engine = .parakeet
         modelName = ModelManager.defaultModel
         translateToEnglish = false
         translationSourceLanguage = ""
+        meetingLanguage = ""
         autoPaste = true
         smartTyping = false
         voiceCommands = true
@@ -374,33 +365,25 @@ struct Hotkey: Equatable {
 
     static let defaultRightOption = Hotkey(
         keyCode: nil,
-        // CGEventFlags doesn't distinguish left/right out of the box;
-        // HotkeyManager checks the device-side bit (NX_DEVICERALTKEYMASK)
-        // to gate "right" specifically. We store .maskAlternate as a logical
-        // hint; the manager interprets bare-modifier hotkeys as side-aware.
+        // CGEventFlags doesn't distinguish left/right; HotkeyManager checks
+        // the device-side bit (NX_DEVICERALTKEYMASK) to gate "right" specifically.
         modifiers: .maskAlternate
     )
 
-    // Meeting toggle defaults to ⌃⌥M. M (kVK_ANSI_M) = 46. Picked because
-    // (a) it doesn't collide with any default macOS shortcut, (b) the M
-    // mnemonic is easy to remember, and (c) Control+Option together
-    // require an intentional press, avoiding accidental meeting starts.
+    // ⌃⌥M: no default macOS collision, easy mnemonic, and the two-modifier
+    // combo avoids accidental meeting starts.
     static let defaultMeeting = Hotkey(
         keyCode: 46,
         modifiers: [.maskControl, .maskAlternate]
     )
 
-    // Voice-edit defaults to ⌃⌥E. E (kVK_ANSI_E) = 14. "E" for Edit.
     static let defaultVoiceEdit = Hotkey(
         keyCode: 14,
         modifiers: [.maskControl, .maskAlternate]
     )
 
-    // Quit shortcut. Hardcoded (not user-configurable) - shadows the status-
-    // bar Quit item so power users never have to reach for the mouse, and so
-    // the app can be terminated when no Purr window is frontmost (the standard
-    // ⌘Q only fires when a window is key). Lives on ⌃⌥ to stay clear of any
-    // focused-app ⌘ shortcuts. kVK_ANSI_Q = 12.
+    // Hardcoded (not user-configurable): shadows the status-bar Quit item, and
+    // works when no Purr window is frontmost, unlike ⌘Q which needs a key window.
     static let quitApp = Hotkey(
         keyCode: 12,
         modifiers: [.maskControl, .maskAlternate]
@@ -415,9 +398,7 @@ struct Hotkey: Equatable {
         if let code = keyCode {
             parts.append(KeyCodes.name(for: code))
         } else if isBareModifier {
-            // Bare modifier hotkey: clarify that it's the right-side key
-            // (which is the whole point of bare-modifier mode - the left
-            // ones get used as actual modifiers in everyday typing).
+            // Clarify right-side - left modifiers are used in everyday typing.
             return "Right \(parts.joined())"
         }
         return parts.joined()
@@ -451,7 +432,6 @@ struct FillerWordEntry: Codable, Equatable, Identifiable, Hashable {
 
 enum KeyCodes {
     static func name(for code: Int64) -> String {
-        // Unlisted codes fall through to "Key <n>".
         switch code {
         case 96: return "F5"
         case 97: return "F6"

@@ -2,40 +2,33 @@ import Accelerate
 
 // Deterministic per-utterance audio cleanup before the ASR engine sees it.
 //
-// Two passes, both standard in NeMo's training-time audio pipeline and
-// therefore *expected* by the conformer at inference:
+// Two passes, both standard in NeMo's training-time pipeline and therefore
+// *expected* by the conformer at inference:
 //
-//   1. DC-offset removal. Subtract the per-utterance mean so the waveform
-//      sits centred on zero. Cheap hardware (and AVAudioEngine on some
-//      Bluetooth aggregate devices) introduces a small constant bias that
-//      shows up in the model's mel-spectrogram frontend as a DC bin
-//      anomaly and degrades the encoder's framing on short clips.
-//   2. Peak normalisation toward -3 dBFS. Quiet inputs (mic gain low,
-//      far-field microphone, soft speaker) are the single most reliable
-//      cause of "full-utterance hallucination" on Parakeet TDT - the
-//      conformer was trained on broadcast-loud speech and the joint
-//      network's logit margins collapse when the signal-to-noise ratio
-//      drops. Bringing peak up to ~0.707 floats restores the level the
-//      model was tuned for without changing the spectral content.
+//   1. DC-offset removal. Cheap hardware (and AVAudioEngine on some Bluetooth
+//      aggregate devices) introduces a constant bias that shows up as a DC bin
+//      anomaly in the mel-spectrogram frontend and degrades the encoder's
+//      framing on short clips.
+//   2. Peak normalisation toward -3 dBFS. Quiet input is the most reliable
+//      cause of "full-utterance hallucination" on Parakeet TDT - the conformer
+//      was trained on broadcast-loud speech and the joint network's logit
+//      margins collapse as SNR drops.
 //
-// Sub-millisecond on M-series for any single hotkey-press utterance. No
-// pre-emphasis filter here - FluidAudio's CoreML preprocessor already does
-// its own mel-spectrogram pre-emphasis internally, and applying it twice
-// shifts the spectrum away from the training distribution.
+// No pre-emphasis filter here - FluidAudio's CoreML preprocessor already
+// applies its own, and doing it twice shifts the spectrum away from the
+// training distribution.
 enum AudioPreprocessor {
-    // Below this peak we treat the buffer as silence and pass it through
-    // unchanged - amplifying noise to "speech level" produces fake
-    // formants the model will happily transcribe as words.
+    // Below this peak the buffer is passed through unchanged - amplifying noise
+    // to "speech level" produces fake formants the model transcribes as words.
     static let silenceThresholdDbFS: Float = -60
 
-    // Target peak after normalisation. -3 dBFS leaves headroom for any
-    // downstream filter inside FluidAudio's preprocessor without clipping.
+    // -3 dBFS leaves headroom for any downstream filter inside FluidAudio's
+    // preprocessor without clipping.
     static let targetPeakDbFS: Float = -3
 
     struct Result {
         let samples: [Float]
-        // Peak of the *original* signal in dBFS, before any normalisation.
-        // The coordinator uses this to flag "mic too quiet" to the user.
+        // Pre-normalisation peak; the coordinator flags "mic too quiet" from it.
         let originalPeakDbFS: Float
     }
 
@@ -63,10 +56,8 @@ enum AudioPreprocessor {
         if originalPeakDbFS > silenceThresholdDbFS {
             let targetLinear = powf(10, targetPeakDbFS / 20)
             var gain = targetLinear / peak
-            // Only boost; don't attenuate already-healthy signals. A signal
-            // that's already peaking above -3 dBFS is fine and pulling it
-            // down can make borderline-quiet syllables fall below the
-            // model's effective noise floor.
+            // Only boost; attenuating an already-healthy signal can push
+            // borderline-quiet syllables below the model's noise floor.
             if gain > 1 {
                 vDSP_vsmul(out, 1, &gain, &out, 1, vDSP_Length(out.count))
             }

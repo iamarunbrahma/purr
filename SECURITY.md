@@ -120,7 +120,7 @@ contain the speech of other people on your calls who never installed Purr. Treat
 folder with the same care as the recordings themselves. Encryption at rest is on the
 roadmap.
 
-Preferences live in `defaults` under `com.arunbrahma.purr`.
+Preferences live in `defaults` under `com.arunbrahma.hello`.
 
 ### Release integrity
 

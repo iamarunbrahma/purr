@@ -1,16 +1,10 @@
 import AppKit
 
-// Manual NSApplication bootstrap instead of @main / SwiftUI App. Two reasons:
-//
-// 1. We want a pure menu-bar app (LSUIElement = true). SwiftUI's App
-//    lifecycle insists on at least one Scene, which forces window plumbing
-//    we don't need and makes MenuBarExtra-vs-NSStatusItem decisions awkward
-//    on macOS 13.
-//
-// 2. The hotkey + audio + transcription pipeline is fundamentally an
-//    AppKit/Combine system. Driving it from a SwiftUI scene root would mean
-//    weaving lifecycle hooks through the View tree. AppDelegate is the
-//    right home.
+// Manual NSApplication bootstrap instead of @main / SwiftUI App:
+// SwiftUI's App lifecycle insists on at least one Scene, which forces window
+// plumbing a pure menu-bar app (LSUIElement) doesn't need, and the hotkey +
+// audio + transcription pipeline is an AppKit/Combine system that belongs in
+// an AppDelegate rather than woven through a View tree.
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
@@ -18,9 +12,8 @@ app.delegate = delegate
 app.setActivationPolicy(.accessory)
 
 // Give AppKit a real main menu. A pure-agent app (LSUIElement + .accessory)
-// that never sets NSApp.mainMenu has only the status-item menu bar, and on
-// macOS Tahoe that can leave the NSStatusItem orphaned off the bar (icon never
-// drawn). Working menu-bar apps always carry a standard app menu; mirror that.
+// that never sets NSApp.mainMenu can end up with an orphaned NSStatusItem on
+// macOS Tahoe - the icon is never drawn.
 let mainMenu = NSMenu()
 let appMenuItem = NSMenuItem()
 mainMenu.addItem(appMenuItem)

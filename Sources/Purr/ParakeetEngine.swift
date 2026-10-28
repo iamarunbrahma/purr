@@ -4,54 +4,44 @@ import FluidAudio
 import Foundation
 import os.log
 
-// Parakeet via FluidAudio. Two completely separate models live behind this
-// engine, and they each serve a different UX:
+// Parakeet via FluidAudio. Three models behind this engine:
 //
-// * **Batch / Meeting / Voice-edit** → `AsrManager` with Parakeet TDT 0.6B v2
-//   (English-only, 600 M params, ~120× RTF on Apple Silicon, word-level
-//   timings used by the meeting diarizer). Used for "hold-to-talk, paste on
-//   release" dictation and for offline transcription of recorded audio.
-//
-// * **Smart typing (live)** → `StreamingEouAsrManager` with the Parakeet
-//   realtime EOU 120 M model at 320 ms chunks. Cache-aware streaming
-//   encoder whose partial-transcript callback fires every chunk with the
-//   accumulated tokens, so the consumer can diff + type as the user
-//   speaks. A separate EOU callback fires after sustained silence and
-//   marks the boundary where PostProcessor runs on the just-completed
-//   utterance.
-//
-// Both models warm up in parallel; the EOU model is ~80-120 MB and
-// downloads from HuggingFace the first time the user enables Parakeet.
+// * **Batch / Meeting (English) / Voice-edit** → `AsrManager` with Parakeet
+//   TDT v2 (English-only, word-level timings for the meeting diarizer).
+//   Used for hold-to-talk dictation and offline transcription.
+// * **Meeting (non-English)** → a second `AsrManager` with Parakeet TDT v3
+//   (multilingual). Loaded only when a non-English meeting language is
+//   picked, so English users never pay for the extra download - dictation
+//   and voice-edit always stay on v2.
+// * **Smart typing (live)** → `StreamingEouAsrManager`, Parakeet EOU at
+//   320ms chunks. Partial-transcript callback fires every chunk so the
+//   consumer can diff + type live; a separate EOU callback marks sustained
+//   silence, where PostProcessor runs on the completed utterance.
 @MainActor
 final class ParakeetEngine: TranscriptionEngine {
     nonisolated let supportsStreaming: Bool = true
 
     private var batchManager: AsrManager?
-    // The single in-flight batch download+load. Concurrent callers (an automatic
-    // warmup and a manual Settings download can fire at once) coalesce onto this
-    // one task instead of each starting a parallel ~450 MB pull to the same folder.
+    // Coalesces concurrent callers (an automatic warmup and a manual Settings
+    // download can fire at once) onto one in-flight download.
     private var batchLoadTask: Task<Void, Error>?
-    // Reports the batch download's progress (0..1 while downloading, nil when it
-    // ends) to one observer, regardless of which path started the download. The
-    // coordinator wires this to a @Published so the Settings card shows a live
-    // bar for warm-up downloads too. `batchDownloadActive` gates late progress
-    // callbacks that could otherwise land after the download finished.
+    // 0..1 while downloading, nil when done, to whichever @Published the
+    // coordinator wires up. `batchDownloadActive` gates late callbacks that
+    // could land after the download finished.
     var onBatchProgress: ((Double?) -> Void)?
     private var batchDownloadActive = false
+    private var meetingBatchManager: AsrManager?
+    private var meetingBatchLoadTask: Task<Void, Error>?
+    var onMeetingBatchProgress: ((Double?) -> Void)?
+    private var meetingBatchDownloadActive = false
     private var streamingManager: StreamingEouAsrManager?
     private var streamingWarmupTask: Task<Void, Never>?
-    // Same shape as onBatchProgress, for the EOU streaming model: reports 0..1
-    // while downloading (whoever started it - warm-up or the Settings button)
-    // and nil when done, so the Smart Typing card shows a bar for an
-    // auto-download too. `eouDownloadActive` gates late progress callbacks.
     var onEOUProgress: ((Double?) -> Void)?
     private var eouDownloadActive = false
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet")
 
-    // 320 ms is the documented sweet spot per FluidAudio's own benchmark
-    // table (4.88 % WER on LibriSpeech test-clean vs 8.23 % at 160 ms),
-    // and 320 ms latency is well inside the threshold where typing feels
-    // live. 160 ms is the fallback if a future user complains about lag.
+    // 320ms: FluidAudio's benchmarks put it at 4.88% WER vs 8.23% at 160ms,
+    // and latency is still well inside the threshold where typing feels live.
     private static let streamingChunk: StreamingChunkSize = .ms320
 
     func warmup() async {
@@ -61,11 +51,8 @@ final class ParakeetEngine: TranscriptionEngine {
             log.error("Parakeet warmup failed: \(error.localizedDescription, privacy: .public)")
         }
 
-        // Preload the streaming EOU model only when Smart Typing is on AND the
-        // model is already on disk - warm-up loads it for instant Smart Typing
-        // but never downloads it. The ~440 MB download happens exclusively from
-        // the Settings Download button, which is what enables the toggle.
-        // Detached so the batch path doesn't wait on the load.
+        // Loads the EOU model only if Smart Typing is on and it's already on
+        // disk - warmup never downloads it, only the Settings button does.
         if SettingsStore.shared.smartTyping, Self.eouIsInstalled(), streamingManager == nil,
             streamingWarmupTask == nil
         {
@@ -75,16 +62,9 @@ final class ParakeetEngine: TranscriptionEngine {
         }
     }
 
-    // Throwing variant of the batch warmup: propagates download errors instead
-    // of swallowing them, and reports a 0..1 download fraction so the Settings
-    // row can show progress. Lets the user fetch the ~450 MB TDT v2 weights on
-    // demand (e.g. after deleting models) rather than waiting for the next
-    // dictation press to trigger it.
-    //
-    // Concurrent calls coalesce: the first creates the load task, later callers
-    // await that same task instead of starting a second download. So a manual
-    // Settings download and an automatic warmup firing together still pull the
-    // weights exactly once.
+    // Throwing variant of warmup's batch load: propagates errors and reports
+    // progress, for the Settings download button. Coalesces with any
+    // concurrent warmup so the weights are only ever pulled once.
     func downloadAndLoadBatchManager() async throws {
         if batchManager != nil { return }
         if let inFlight = batchLoadTask {
@@ -99,14 +79,11 @@ final class ParakeetEngine: TranscriptionEngine {
         try await task.value
     }
 
-    // The actual download + load, only ever invoked through the coalescing task
-    // above. Progress goes to `onBatchProgress` (0 at start, fractions during,
-    // nil at end) so every initiator drives the same UI. checkCancellation
-    // guards the assignment so a delete that cancels the task mid-flight can't
-    // resurrect the manager from removed files.
+    // checkCancellation guards the assignment so a delete that cancels the
+    // task mid-flight can't resurrect the manager from removed files.
     private func loadBatchManager() async throws {
-        // Only surface progress when weights will actually be fetched; a
-        // load-from-disk on warm-up shouldn't flash "downloading…".
+        // Only surface progress when weights will actually be fetched - a
+        // load-from-disk on warmup shouldn't flash "downloading…".
         let willDownload = !Self.batchIsInstalled()
         if willDownload {
             batchDownloadActive = true
@@ -118,7 +95,7 @@ final class ParakeetEngine: TranscriptionEngine {
                 onBatchProgress?(nil)
             }
         }
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
+        let progressHandler: ProgressHandler? = { [weak self] progress in
             let fraction = progress.fractionCompleted
             Task { @MainActor in
                 guard let self, self.batchDownloadActive else { return }
@@ -134,6 +111,80 @@ final class ParakeetEngine: TranscriptionEngine {
         log.info("Parakeet TDT v2 downloaded and warmed up.")
     }
 
+    // v3 counterpart to downloadAndLoadBatchManager() - same coalescing-task
+    // shape, so a manual Settings download and a meeting hitting a
+    // non-English language don't race two pulls into the same folder.
+    func downloadAndLoadMeetingManager() async throws {
+        if meetingBatchManager != nil { return }
+        if let inFlight = meetingBatchLoadTask {
+            try await inFlight.value
+            return
+        }
+        let task = Task { [weak self] () throws -> Void in
+            try await self?.loadMeetingManager()
+        }
+        meetingBatchLoadTask = task
+        defer { if meetingBatchLoadTask == task { meetingBatchLoadTask = nil } }
+        try await task.value
+    }
+
+    private func loadMeetingManager() async throws {
+        let willDownload = !Self.meetingModelIsInstalled()
+        if willDownload {
+            meetingBatchDownloadActive = true
+            onMeetingBatchProgress?(0)
+        }
+        defer {
+            if willDownload {
+                meetingBatchDownloadActive = false
+                onMeetingBatchProgress?(nil)
+            }
+        }
+        let progressHandler: ProgressHandler? = { [weak self] progress in
+            let fraction = progress.fractionCompleted
+            Task { @MainActor in
+                guard let self, self.meetingBatchDownloadActive else { return }
+                self.onMeetingBatchProgress?(fraction)
+            }
+        }
+        let models = try await AsrModels.downloadAndLoad(
+            to: Self.meetingModelDirectory, version: .v3, progressHandler: progressHandler)
+        let manager = AsrManager(config: .default)
+        try await manager.loadModels(models)
+        try Task.checkCancellation()
+        meetingBatchManager = manager
+        log.info("Parakeet TDT v3 (meeting, multilingual) downloaded and warmed up.")
+    }
+
+    func unloadMeetingManager() {
+        meetingBatchLoadTask?.cancel()
+        meetingBatchLoadTask = nil
+        meetingBatchManager = nil
+        log.info("Parakeet TDT v3 (meeting) unloaded.")
+    }
+
+    // Separate on-disk folder from batchModelDirectory - v2 and v3 are
+    // different weights, so they can't share a directory the way EOU's chunk
+    // variants do.
+    static var meetingModelDirectory: URL {
+        ModelManager.modelsDirectory.appendingPathComponent("parakeet-tdt-0.6b-v3", isDirectory: true)
+    }
+
+    static func meetingModelIsInstalled() -> Bool {
+        guard
+            let contents = try? FileManager.default.contentsOfDirectory(
+                atPath: meetingModelDirectory.path)
+        else { return false }
+        return !contents.isEmpty
+    }
+
+    static func meetingModelDelete() throws {
+        let url = meetingModelDirectory
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
     private func loadStreamingManager() async {
         do {
             try await downloadAndLoadStreamingManager()
@@ -143,14 +194,10 @@ final class ParakeetEngine: TranscriptionEngine {
         }
     }
 
-    // Throwing variant: propagates download errors (network down, HF outage)
-    // instead of swallowing them. Progress goes to `onEOUProgress` (0 at start,
-    // fractions during, nil at end) so every initiator - warm-up or the Settings
-    // button - drives the same Smart Typing card.
+    // Propagates download errors (network down, HF outage) instead of
+    // swallowing them, for the Smart Typing card's Download button.
     func downloadAndLoadStreamingManager() async throws {
         guard streamingManager == nil else { return }
-        // Only surface progress when the model will actually be fetched; a
-        // load-from-disk on warm-up shouldn't flash "downloading…".
         let willDownload = !Self.eouIsInstalled()
         if willDownload {
             eouDownloadActive = true
@@ -167,7 +214,7 @@ final class ParakeetEngine: TranscriptionEngine {
             chunkSize: Self.streamingChunk,
             eouDebounceMs: 1280
         )
-        let progressHandler: DownloadUtils.ProgressHandler? = { [weak self] progress in
+        let progressHandler: ProgressHandler? = { [weak self] progress in
             let fraction = progress.fractionCompleted
             Task { @MainActor in
                 guard let self, self.eouDownloadActive else { return }
@@ -188,10 +235,8 @@ final class ParakeetEngine: TranscriptionEngine {
         log.info("Parakeet EOU streaming unloaded.")
     }
 
-    // Drops the in-memory batch CoreML graphs (and cancels any in-flight load) so
-    // a subsequent on-disk delete doesn't leave a stale mmap pointing at removed
-    // files. The next transcribe re-warms (and re-downloads if the weights are
-    // gone). MUST run before ModelManager.deleteAllModels.
+    // MUST run before ModelManager.deleteAllModels - drops the in-memory
+    // graphs so an on-disk delete doesn't leave a stale mmap.
     func unloadBatchManager() {
         batchLoadTask?.cancel()
         batchLoadTask = nil
@@ -199,10 +244,8 @@ final class ParakeetEngine: TranscriptionEngine {
         log.info("Parakeet TDT batch unloaded.")
     }
 
-    // Where the batch Parakeet TDT v2 weights live. Routed under Purr's own
-    // models folder (instead of FluidAudio's default) so every Purr model sits
-    // in one place that uninstalling removes. `downloadAndLoad(to:)` treats
-    // this as the model's own directory and writes/reads the CoreML bundles here.
+    // Under Purr's own models folder, not FluidAudio's default, so every
+    // model sits in one place that uninstalling removes.
     static var batchModelDirectory: URL {
         ModelManager.modelsDirectory.appendingPathComponent("parakeet-tdt-0.6b-v2", isDirectory: true)
     }
@@ -246,44 +289,56 @@ final class ParakeetEngine: TranscriptionEngine {
         return TranscriptCleaner.clean(detailed.text)
     }
 
-    // Returns token timings (dropped by transcribe()) for speaker-segment
-    // alignment when merging diarization output.
-    //
-    // We run the English-only v2 model (highest English recall on the Open
-    // ASR Leaderboard; non-English dictation uses the Whisper engine instead).
-    // `language: .english` is a no-op on v2 - it only drives v3's multilingual
-    // script-aware token filter - but is left in so the call is correct if the
-    // model version is ever switched back.
+    // Returns token timings (dropped by transcribe()) for diarization merge.
+    // Runs v2 (highest English recall; non-English dictation uses Whisper
+    // instead). `language: .english` is a no-op on v2 - it only drives v3's
+    // token filter - but keeps the call correct if v2 is ever swapped for v3.
     func transcribeDetailed(samples: [Float]) async throws -> ASRResult {
         if batchManager == nil { await warmup() }
         guard let manager = batchManager else { throw EngineError.notLoaded }
-        let started = Date()
+        return try await runTranscribe(
+            on: manager, samples: samples, language: .english, modelLabel: "Parakeet")
+    }
 
-        // Bound the CoreML inference so a stuck decode can never pin the HUD on
-        // "Transcribing" forever (issue #1: indefinite hang on the A18-class
-        // MacBook Neo, whose ANE/low-memory profile no M-series test machine
-        // shares - a Parakeet prediction there never returns). The budget is
-        // generous and audio-proportional: a real transcription runs many times
-        // faster than realtime, so this only ever trips on a genuine hang, never
-        // on slow-but-working work. The fresh decoder state is built inside the
-        // work closure to keep its `inout` off the concurrency boundary.
+    // Meeting-only multilingual counterpart to transcribeDetailed(), backed by
+    // the v3 manager. `language` drives v3's script-aware token filter
+    // (reduces wrong-script leakage, e.g. Cyrillic tokens mid-Polish
+    // transcript) - pass the meeting's configured language, or nil to let
+    // the decoder run unfiltered.
+    func transcribeMeeting(samples: [Float], language: Language?) async throws -> ASRResult {
+        if meetingBatchManager == nil { try await downloadAndLoadMeetingManager() }
+        guard let manager = meetingBatchManager else { throw EngineError.notLoaded }
+        return try await runTranscribe(
+            on: manager, samples: samples, language: language, modelLabel: "Parakeet v3 (meeting)")
+    }
+
+    // Bounds CoreML inference so a stuck decode can't pin the HUD on
+    // "Transcribing" forever (a Parakeet prediction on the A18-class MacBook
+    // Neo's ANE has been observed to never return). Audio-proportional budget
+    // trips only on a genuine hang, not slow-but-working audio. Decoder state
+    // is built inside the work closure to keep its `inout` off the
+    // concurrency boundary.
+    private func runTranscribe(
+        on manager: AsrManager, samples: [Float], language: Language?, modelLabel: String
+    ) async throws -> ASRResult {
+        let started = Date()
         let audioSeconds = Double(samples.count) / 16_000
         let budget: Duration = .seconds(45) + .seconds(audioSeconds * 5)
         do {
             let result = try await withTimeout(budget) {
                 var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
                 return try await manager.transcribe(
-                    samples, decoderState: &state, language: .english)
+                    samples, decoderState: &state, language: language)
             }
             let elapsed = Date().timeIntervalSince(started)
             log.info(
-                "Parakeet transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s"
+                "\(modelLabel, privacy: .public) transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s"
             )
             return result
         } catch is TimedOutError {
             let waited = Date().timeIntervalSince(started)
             log.error(
-                "Parakeet transcription timed out after \(String(format: "%.1f", waited), privacy: .public)s for \(samples.count, privacy: .public) samples (\(String(format: "%.1f", audioSeconds), privacy: .public)s audio) - CoreML inference did not return. Aborting so the HUD can recover."
+                "\(modelLabel, privacy: .public) transcription timed out after \(String(format: "%.1f", waited), privacy: .public)s for \(samples.count, privacy: .public) samples (\(String(format: "%.1f", audioSeconds), privacy: .public)s audio) - CoreML inference did not return. Aborting so the HUD can recover."
             )
             throw EngineError.transcriptionTimedOut
         }
@@ -307,18 +362,13 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 }
 
-// Streaming session backed by FluidAudio's StreamingEouAsrManager.
-// Two callbacks feed one event stream:
-//
-// * `setPartialCallback` — 320 ms cadence, full accumulated transcript.
-//   We diff against the last emitted text and yield the new suffix.
-//   EOU's decoder is append-only so the diff is always a clean suffix.
-// * `setEouCallback` — fires after `eouDebounceMs` of sustained silence
-//   with the raw accumulated transcript at that boundary.
-//
-// `finish()` always emits one final `.endOfUtterance` before closing
-// the stream so trailing audio is reconciled even when no in-stream
-// EOU fired (short utterances often skip the in-stream signal).
+// Streaming session backed by FluidAudio's StreamingEouAsrManager. Two
+// callbacks feed one event stream: `setPartialCallback` (320ms cadence,
+// full accumulated transcript - diffed against the last emission since
+// EOU's decoder is append-only) and `setEouCallback` (fires after
+// `eouDebounceMs` of silence with the raw transcript at that boundary).
+// `finish()` always emits one final `.endOfUtterance` so trailing audio is
+// reconciled even when no in-stream EOU fired (common on short utterances).
 @MainActor
 final class StreamingEouAsrSession: StreamingSession {
     nonisolated let events: AsyncStream<StreamingEvent>
@@ -326,7 +376,7 @@ final class StreamingEouAsrSession: StreamingSession {
     private let manager: StreamingEouAsrManager
     private let inputFormat: AVAudioFormat
     private let diff = PartialDiff()
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet.eou")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet.eou")
 
     init(manager: StreamingEouAsrManager) {
         self.manager = manager
@@ -370,13 +420,9 @@ final class StreamingEouAsrSession: StreamingSession {
         guard let buffer = makeBuffer(from: samples) else { return }
         try await manager.appendAudio(buffer)
         try await manager.processBufferedAudio()
-        // FluidAudio's EOU detector latches: once it fires, `eouDetected` stays
-        // true and no further EOU is raised until reset(). So re-arm after every
-        // utterance. reset() also clears the accumulated transcript, so the next
-        // sentence is decoded fresh and reaches the consumer as a complete
-        // utterance (not appended to the previous one). The EOU callback has
-        // already yielded this sentence's transcript by the time we get here, and
-        // the manager is an actor so this reset can't race the next process().
+        // FluidAudio's EOU detector latches until reset() - re-arm after every
+        // utterance, which also clears the transcript so the next sentence
+        // decodes fresh instead of appending to the previous one.
         if await manager.eouDetected {
             await manager.reset()
             diff.reset()
@@ -384,10 +430,9 @@ final class StreamingEouAsrSession: StreamingSession {
     }
 
     func finish() async throws {
-        // manager.finish() flushes the padded final chunk (which fires
-        // one more partialCallback) before returning the full transcript.
-        // The trailing .endOfUtterance covers utterances where no in-
-        // stream EOU ever fired.
+        // Flushes the final chunk (one more partialCallback) before
+        // returning; the trailing .endOfUtterance covers utterances
+        // where no in-stream EOU ever fired.
         let final = try await manager.finish()
         continuation.yield(.endOfUtterance(rawAccumulated: final))
         continuation.finish()
@@ -396,9 +441,7 @@ final class StreamingEouAsrSession: StreamingSession {
 
     func cancel() async {
         continuation.finish()
-        // Reset clears decoder + audio buffer state; cleanup() would
-        // unload the CoreML graphs, which we want to keep cached for the
-        // next session.
+        // reset(), not cleanup() - keeps the CoreML graphs cached for reuse.
         await manager.reset()
     }
 
@@ -429,10 +472,9 @@ private final class PartialDiff: @unchecked Sendable {
     func consume(_ full: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        // Within an utterance the transcript only grows, so the diff is a clean
-        // suffix. The session calls reset() at each EOU boundary (the recognizer
-        // is reset there), so the next utterance diffs from empty. The prefix
-        // branch is a safety hatch for any out-of-order/revised emission.
+        // The transcript only grows within an utterance, so this is normally
+        // a clean suffix; the prefix branch is a safety hatch for any
+        // out-of-order/revised emission.
         guard full.hasPrefix(lastEmitted) else {
             lastEmitted = full
             return full.isEmpty ? nil : full
@@ -443,8 +485,7 @@ private final class PartialDiff: @unchecked Sendable {
         return suffix
     }
 
-    // Called at each EOU boundary so the next utterance's partials diff from
-    // empty (the recognizer's accumulated transcript was just reset).
+    // Called at each EOU boundary so the next utterance diffs from empty.
     func reset() {
         lock.lock()
         defer { lock.unlock() }

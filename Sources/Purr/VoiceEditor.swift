@@ -5,16 +5,12 @@ import os.log
 // "Select text in any field, hold the voice-edit hotkey, speak the edit,
 // release." Lives parallel to AppCoordinator's dictation flow rather than
 // tangling with it: dictation writes new text into the cursor, editing
-// rewrites a selection in place.
-//
-// We require a non-empty selection at press-time. If the user hits the
-// edit hotkey with nothing selected we abort with an HUD hint - that's
-// less surprising than silently dictating into the wrong place.
+// rewrites a selection in place. A press with nothing selected aborts with an
+// HUD hint - less surprising than silently dictating into the wrong place.
 @MainActor
 final class VoiceEditor {
-    // Exposed so the coordinator can fold voice-edit activity into the menu
-    // bar glyph - this flow drives the HUD directly and otherwise never
-    // surfaces in the status item.
+    // Exposed so the coordinator can fold voice-edit activity into the menu bar
+    // glyph; this flow drives the HUD directly and otherwise never surfaces there.
     enum State: Equatable {
         case idle
         case recording
@@ -33,14 +29,13 @@ final class VoiceEditor {
     private var isActive = false
     private var recordingStartedAt: Date?
 
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "voice-edit")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "voice-edit")
 
     init(hud: RecordingHUD, engineProvider: @escaping () -> any TranscriptionEngine) {
         self.hud = hud
         self.engineProvider = engineProvider
-        // Voice edit is push-to-talk too, so keep its mic warm between uses
-        // (the recorder skips this on Bluetooth) to avoid clipping the spoken
-        // instruction's opening words.
+        // Push-to-talk, so keep the mic warm between uses (the recorder skips this
+        // on Bluetooth) to avoid clipping the instruction's opening words.
         recorder.allowsWarmKeeping = true
     }
 
@@ -56,9 +51,9 @@ final class VoiceEditor {
     func handlePress() {
         if hud.shouldIgnorePress(whileBusy: voiceEditBusy) { return }
 
-        // Voice edit interprets the instruction with an on-device LLM and
-        // has no regex fallback. If no backend is set up, fail fast - before
-        // recording - so the user isn't left speaking into a dead feature.
+        // The instruction is interpreted by an on-device LLM with no regex fallback,
+        // so fail fast before recording rather than let the user speak into a dead
+        // feature.
         guard EditInterpreter.isAvailable else {
             hud.showMessage(
                 EditInterpreter.Failure.noBackend.errorDescription ?? "Voice Edit is unavailable.")
@@ -66,10 +61,9 @@ final class VoiceEditor {
             return
         }
 
-        // Read the selection up front. Doing it on press (not release)
-        // means we capture the text the user actually had selected at the
-        // moment they triggered the hotkey, not whatever they ended up
-        // with after speaking.
+        // Read on press, not release, so we capture what the user had selected when
+        // they triggered the hotkey rather than whatever they ended up with after
+        // speaking.
         let selection: String
         do {
             selection = try AXSelection.readSelection()
@@ -83,9 +77,8 @@ final class VoiceEditor {
             return
         }
 
-        // Reject an oversized selection now, before recording: a too-long
-        // passage would overflow the model's context window, and Gemma in
-        // particular doesn't fail cleanly on that.
+        // Reject before recording: a too-long passage overflows the model's context
+        // window, and Gemma in particular doesn't fail cleanly on that.
         guard selection.count <= EditInterpreter.maxSelectionCharacters else {
             hud.showMessage(
                 EditInterpreter.Failure.selectionTooLong.errorDescription
@@ -101,12 +94,11 @@ final class VoiceEditor {
             try recorder.start()
             recordingStartedAt = Date()
             state = .recording
-            // "Warming up…" until the mic delivers a buffer; startLevelTask()
-            // flips it to "Voice edit" then.
+            // "Warming up…" until the mic delivers a buffer; startLevelTask() flips it.
             hud.show(.warmingUp)
             startLevelTask()
-            // Warm the LLM while the user speaks so a cold model load overlaps
-            // with the recording window instead of stalling the edit.
+            // Warm the LLM while the user speaks so a cold model load overlaps the
+            // recording window instead of stalling the edit.
             EditInterpreter.warmUp()
         } catch {
             isActive = false
@@ -134,9 +126,8 @@ final class VoiceEditor {
         capturedSelection = nil
 
         guard samples.count >= 16_000 * 2 / 10 else {
-            // A real hold that captured almost nothing means the mic was still
-            // waking up - be honest and reset the device. A genuine short tap
-            // just hides.
+            // A real hold that captured almost nothing means the mic was still waking
+            // up - say so and reset the device. A genuine short tap just hides.
             if heldFor >= 1.0, samples.count < 16_000 / 5 {
                 let btHint =
                     AudioRecorder.defaultInputIsBluetooth()
@@ -162,12 +153,10 @@ final class VoiceEditor {
         let hud = self.hud
         let log = self.log
 
-        // Same per-utterance DC-removal + peak-normalise pass used by the
-        // dictation flow. Voice-edit utterances are even shorter than
-        // dictation ones, so they're the most sensitive to mic gain - a
-        // quiet instruction can decode as something the LLM can't act on.
-        // When that happens EditInterpreter throws and the selection is left
-        // exactly as the user had it, rather than being overwritten.
+        // Same DC-removal + peak-normalise pass the dictation flow uses. Voice-edit
+        // utterances are shorter, so they're the most sensitive to mic gain - a quiet
+        // instruction can decode as something the LLM can't act on, and EditInterpreter
+        // then throws, leaving the selection untouched.
         let prepared = AudioPreprocessor.normalize(samples)
         log.info(
             "Voice-edit audio peak: \(String(format: "%.1f", prepared.originalPeakDbFS), privacy: .public) dBFS"
@@ -178,9 +167,8 @@ final class VoiceEditor {
             defer { self?.state = .idle }
             do {
                 let raw = try await engine.transcribe(samples: prepared.samples)
-                // The instruction is dictated speech, so run the same
-                // deterministic post-processing the dictation flow uses
-                // (each honouring its Settings toggle) before the LLM sees it.
+                // The instruction is dictated speech, so run the same deterministic
+                // post-processing (honouring its Settings toggles) before the LLM sees it.
                 let instruction = PostProcessor(
                     trimFillers: SettingsStore.shared.trimFillers,
                     customFillerWords: SettingsStore.shared.customFillerWords,
@@ -196,9 +184,8 @@ final class VoiceEditor {
                 let edited = try await EditInterpreter.apply(instruction: instruction, to: selection)
                 log.info("Voice edit applied → \(edited.count, privacy: .public) chars")
                 if !AXSelection.replaceSelection(with: edited) {
-                    // AX write failed (Chrome, Electron, some apps).
-                    // Pasting always overwrites the current selection, so
-                    // we get the same outcome as a successful AX write.
+                    // AX write failed (Chrome, Electron, some apps). Pasting overwrites
+                    // the selection, so the outcome matches a successful AX write.
                     inserter.insert(edited)
                 }
                 if micWasVeryQuiet {
@@ -210,10 +197,10 @@ final class VoiceEditor {
                     hud.hide()
                 }
             } catch let failure as EditInterpreter.Failure {
-                // Interpretation failed - the selection is untouched. Surface
-                // the specific reason so the user knows whether to retry,
-                // rephrase, or set up a model. For .backend the HUD message is
-                // generic, so log the wrapped error to keep the diagnostic.
+                // Interpretation failed - the selection is untouched. Surface the
+                // specific reason so the user knows whether to retry, rephrase, or
+                // set up a model. .backend's HUD message is generic, so log the
+                // wrapped error to keep the diagnostic.
                 if case .backend(let inner) = failure {
                     log.error("Voice edit backend failed: \(inner.localizedDescription, privacy: .public)")
                 } else {
@@ -234,8 +221,7 @@ final class VoiceEditor {
         levelTask = Task { [weak self] in
             guard let self else { return }
             var sawFirstBuffer = false
-            // First mic buffer flips "Warming up…" to "Voice Edit"; every
-            // buffer after drives the live waveform.
+            // First buffer flips "Warming up…" to "Voice Edit"; the rest drive the waveform.
             for await level in self.recorder.levels {
                 if Task.isCancelled { break }
                 if !sawFirstBuffer {

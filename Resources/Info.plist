@@ -11,13 +11,13 @@
     <key>CFBundleIconName</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.arunbrahma.purr</string>
+    <string>com.arunbrahma.hello</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Purr</string>
+    <string>Purr Test</string>
     <key>CFBundleDisplayName</key>
-    <string>Purr</string>
+    <string>Purr Test</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>NSPrincipalClass</key>

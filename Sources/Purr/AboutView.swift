@@ -1,9 +1,8 @@
 import AppKit
 import SwiftUI
 
-// About panel + in-app updater UI. Single SwiftUI view backed by an Updater
-// observable so the state machine drives every label and button without a
-// switch in two places.
+// About panel + in-app updater UI, driven entirely by the Updater state
+// machine so no label or button needs a second switch elsewhere.
 struct AboutView: View {
     @ObservedObject var updater: Updater
     @ObservedObject var coordinator: AppCoordinator
@@ -41,8 +40,7 @@ struct AboutView: View {
         .padding(24)
         .frame(width: 380, height: 320)
         .onAppear {
-            // Quietly check on first open. The user can re-trigger from the
-            // button - this just saves a click in the common case.
+            // Quiet check on first open; the button re-triggers it on demand.
             if case .idle = updater.state {
                 Task { await updater.checkForUpdates() }
             }
@@ -106,9 +104,8 @@ struct AboutView: View {
             }
 
         case .readyToInstall:
-            // Transient: updatePurr() flips state -> .installing immediately
-            // after .readyToInstall. Shown only if the chained install fails
-            // to fire (defensive); the user can retry the same one-click path.
+            // Transient - updatePurr() flips straight to .installing, so this
+            // shows only if the chained install fails to fire.
             VStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text("Preparing installer…")

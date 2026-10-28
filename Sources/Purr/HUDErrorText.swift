@@ -1,19 +1,15 @@
 import AVFoundation
 
-// Turns a thrown error into a short, user-facing HUD message. Two rules the
-// HUD depends on: no raw error codes (those stay in the log via the caller's
-// log.error), and no em dashes. Returns nil when there's no specific guidance
-// to offer, so callers fall back to the generic "Try again" pill.
-//
-// The phrasing follows the recoverable-vs-actionable split: a denied mic
-// permission or a missing model tells the user what to *do* (retrying won't
-// help), while genuinely unknown failures fall through to "Try again".
+// Turns a thrown error into a short, user-facing HUD message. Two rules the HUD
+// depends on: no raw error codes (those stay in the log via the caller's
+// log.error), and no em dashes. Messages that name an action come first;
+// anything without specific guidance returns nil so callers fall back to the
+// generic "Try again" pill.
 enum HUDErrorText {
     static func message(for error: Error) -> String? {
-        // A revoked microphone permission is the most common non-retryable
-        // cause, and it can mask itself as a generic capture failure. Check it
-        // first so we never tell the user to "try again" when a retry cannot
-        // succeed until they flip the System Settings toggle.
+        // A revoked microphone permission can mask itself as a generic capture
+        // failure, so check it first - "try again" cannot succeed until the
+        // user flips the System Settings toggle.
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .denied, .restricted:
             return
@@ -36,8 +32,7 @@ enum HUDErrorText {
         }
 
         // EngineError's descriptions are already written for users and carry
-        // the right action (download a model, switch engine), with no codes or
-        // em dashes, so surface them verbatim.
+        // the right action, so surface them verbatim.
         if let engine = error as? EngineError {
             return engine.errorDescription
         }

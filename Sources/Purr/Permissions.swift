@@ -3,24 +3,21 @@ import AppKit
 import ApplicationServices
 import IOKit.hid
 
-// Reads the three TCC states we depend on, and "asks" for the two we can
-// actually request programmatically (Accessibility and Input Monitoring).
+// Reads the three TCC states we depend on, and requests the two that can be
+// requested programmatically (Accessibility and Input Monitoring).
 //
-// Calling AXIsProcessTrustedWithOptions and IOHIDRequestAccess does two
-// things macOS won't do for us automatically:
-//   1. Registers the app in the System Settings list under the right pane.
-//      Until the app calls these once, it won't appear in the list at all.
-//   2. Shows the system prompt the FIRST time only. After deny/dismiss the
-//      user has to manually toggle in System Settings, which is why "Grant"
-//      always also opens the deeplinked pane as a fallback.
+// Calling AXIsProcessTrustedWithOptions and IOHIDRequestAccess does two things
+// macOS won't do automatically:
+//   1. Registers the app in the right System Settings pane. Until these are
+//      called once, the app isn't listed at all.
+//   2. Shows the system prompt the FIRST time only. After deny/dismiss the user
+//      must toggle manually, which is why "Grant" also opens the pane.
 //
-// After the bundle ID changes (e.g. from a rename) or after re-signing an
-// ad-hoc-signed binary multiple times, prior grants can become stale -
-// they're attached to a code signature designation that no longer matches
-// the running app. The user has to remove the old entry from System
-// Settings (or run `tccutil reset Accessibility com.arunbrahma.purr`
-// and `tccutil reset ListenEvent com.arunbrahma.purr`) and grant
-// again.
+// A bundle ID change or repeated ad-hoc re-signing can invalidate prior grants -
+// they're bound to a code signature designation that no longer matches. The fix
+// is removing the old System Settings entry (or `tccutil reset Accessibility
+// com.arunbrahma.hello` / `tccutil reset ListenEvent com.arunbrahma.hello`)
+// and granting again.
 enum Permissions {
     enum Kind: String, CaseIterable, Identifiable {
         case microphone, accessibility, inputMonitoring
@@ -44,10 +41,8 @@ enum Permissions {
             }
         }
         var settingsURL: URL {
-            // x-apple.systempreferences URLs deeplink to the right pane in
-            // System Settings. These work on macOS 13+; the IDs occasionally
-            // change between macOS versions but these three have been stable
-            // since Ventura.
+            // Pane IDs occasionally change between macOS versions; these three
+            // have been stable since Ventura.
             switch self {
             case .microphone:
                 return URL(
@@ -67,19 +62,14 @@ enum Permissions {
         case .microphone:
             return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .accessibility:
-            // Do NOT try to "live-probe" via AXUIElementCopyAttributeValue
-            // on AXUIElementCreateSystemWide() - it succeeds for our
-            // own focused window even when untrusted, producing false
-            // positives. The result can lag for the lifetime of the
-            // process when the user toggles the System Settings switch
-            // on a running app; the relaunch button is the documented
-            // workaround.
+            // Do NOT "live-probe" via AXUIElementCopyAttributeValue on
+            // AXUIElementCreateSystemWide() - it succeeds for our own focused
+            // window even when untrusted, a false positive. This result can lag
+            // for the life of the process when the user toggles the switch on a
+            // running app; the relaunch button is the documented workaround.
             return AXIsProcessTrusted()
         case .inputMonitoring:
-            // IOHIDCheckAccess is the canonical way to read this without
-            // triggering a prompt. The constant value is 1 (kIOHIDRequestTypeListenEvent)
-            // and we use the C symbol directly rather than importing the
-            // private header.
+            // IOHIDCheckAccess is the canonical prompt-free read.
             return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
         }
     }
@@ -94,12 +84,10 @@ enum Permissions {
         }
     }
 
-    // The Grant-button path for microphone. requestAccess only shows the
-    // system prompt while the status is .notDetermined; once the user has
-    // denied, it returns false with no UI at all (macOS never re-prompts a
-    // denied app, not even after relaunch). So in the denied case we
-    // deep-link to System Settings instead - the only way back. .authorized
-    // never reaches here because the Grant button is hidden once granted.
+    // requestAccess only prompts while the status is .notDetermined; once
+    // denied it returns false with no UI at all (macOS never re-prompts a denied
+    // app, not even after relaunch), so the denied case deep-links to System
+    // Settings - the only way back.
     static func grantMicrophone(_ completion: @escaping () -> Void) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .notDetermined:
@@ -110,10 +98,8 @@ enum Permissions {
         }
     }
 
-    // Triggers the macOS prompt and adds Purr to the Accessibility
-    // list in System Settings. Only prompts on the very first call - after
-    // the user dismisses or denies, the user must toggle manually in
-    // System Settings (which `openSettings(for:)` deeplinks them to).
+    // Adds Purr to the Accessibility list in System Settings; prompts on the
+    // first call only.
     @discardableResult
     static func requestAccessibility() -> Bool {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
@@ -121,8 +107,7 @@ enum Permissions {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    // Same idea for Input Monitoring (macOS 10.15+): first call shows the
-    // prompt, subsequent calls just check.
+    // Same idea for Input Monitoring (macOS 10.15+).
     @discardableResult
     static func requestInputMonitoring() -> Bool {
         IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
@@ -133,12 +118,10 @@ enum Permissions {
     }
 
     // System Audio Recording (kTCCServiceAudioCapture) is not one of the three
-    // Kinds: it has no public authorization-status API and no programmatic
-    // request - the only prompt fires automatically the first time a Core Audio
-    // process tap starts, and never again once answered. So we can't show a live
-    // status or a "Grant" that prompts; we can only deep-link to the pane where
-    // the user toggles it. macOS groups it under "Screen & System Audio
-    // Recording" (the ScreenCapture pane).
+    // Kinds: it has no public status API and no programmatic request - the only
+    // prompt fires when a Core Audio process tap first starts, and never again
+    // once answered. So there's no live status or prompting "Grant", only a
+    // deep-link to the pane, which macOS groups under ScreenCapture.
     static let systemAudioSettingsURL = URL(
         string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 

@@ -2,18 +2,16 @@ import AppKit
 import Carbon.HIToolbox
 import os.log
 
-// Global hotkey via `CGEvent.tapCreate`. We deliberately do not use the
-// Carbon `RegisterEventHotKey` API because:
+// Global hotkey via `CGEvent.tapCreate`. Carbon's `RegisterEventHotKey` is
+// deliberately not used because:
 //
-//   - It can't fire on bare modifiers (e.g. hold Right Option alone). The
-//     "press Right Option" interaction that WisprFlow popularised is the
-//     interaction users want from a dictation app, and it requires watching
+//   - It can't fire on bare modifiers (e.g. hold Right Option alone), which is
+//     the interaction users expect from a dictation app and requires watching
 //     the raw event stream.
-//   - It can't distinguish left vs right modifier keys, only the logical
+//   - It can't distinguish left from right modifier keys, only the logical
 //     "any option/command/etc."
 //
-// CGEventTap sees the device-side codes for each right modifier
-// separately and gives us the resolution we need.
+// CGEventTap sees the device-side code for each right modifier separately.
 final class HotkeyManager {
     typealias Callback = () -> Void
 
@@ -34,17 +32,16 @@ final class HotkeyManager {
     private var bindings: [Binding] = []
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    // Per-binding press state, keyed by Action, so two bindings can be
-    // observed independently (e.g. user holds voice-edit while dictation
-    // is in toggle mode - they shouldn't interfere).
+    // Per-binding press state so two bindings stay independent - holding
+    // voice-edit while dictation is in toggle mode must not interfere.
     private var heldDown: [Action: Bool] = [:]
     private var dictationSuspended = false
 
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "hotkey")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "hotkey")
 
-    // Right-side modifier device codes (NSEvent.keyCode for modifier-only
-    // flagsChanged events). Carbon's kVK_* constants don't distinguish
-    // sides, so we hardcode these from IOHIDFamily.
+    // Right-side modifier device codes (NSEvent.keyCode on flagsChanged).
+    // Hardcoded from IOHIDFamily because Carbon's kVK_* constants don't
+    // distinguish sides.
     private static let kRightCommand: Int64 = 54
     private static let kRightShift: Int64 = 60
     private static let kRightOption: Int64 = 61
@@ -59,9 +56,8 @@ final class HotkeyManager {
         self.heldDown = Dictionary(uniqueKeysWithValues: new.map { ($0.action, false) })
     }
 
-    // Silences the dictation hotkey only (meeting + voice-edit still
-    // fire). Used while a meeting is recording so the user can't
-    // accidentally insert a batch transcript into a window.
+    // Silences the dictation hotkey only (meeting + voice-edit still fire),
+    // so a recording meeting can't leak a batch transcript into a window.
     func suspendDictation(_ suspend: Bool) {
         dictationSuspended = suspend
         if suspend { heldDown[.transcribe] = false }
@@ -121,8 +117,7 @@ final class HotkeyManager {
     // ------------------------------------------------------------------
 
     private func handle(type: CGEventType, event: CGEvent) {
-        // The OS occasionally disables our tap (timeout, backgrounded
-        // dispatch, system sleep). Re-enable and move on.
+        // The OS occasionally disables our tap (timeout, sleep). Re-enable it.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
@@ -174,11 +169,9 @@ final class HotkeyManager {
         let wasDown = heldDown[binding.action] ?? false
 
         if type == .keyUp {
-            // A keyUp ends the hold whenever this binding is currently
-            // held - the modifier state at release time is irrelevant.
-            // Users routinely lift the modifiers a few ms before the
-            // letter, so the keyUp arrives with different (often empty)
-            // flags; an exact modifier match here would strand the binding
+            // A keyUp ends the hold regardless of modifier state at release
+            // time. Users routinely lift the modifiers a few ms before the
+            // letter, so requiring an exact match here would strand the binding
             // permanently "held" and never call onRelease.
             guard wasDown else { return }
             heldDown[binding.action] = false

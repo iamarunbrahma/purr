@@ -9,12 +9,8 @@ struct TimedOutError: Error {}
 // that polls `Task.checkCancellation()`, like FluidAudio's TDT decode loop)
 // unwinds at its next check - and then ABANDONED, so even a *non-cooperative*
 // hang (a CoreML / ANE `prediction()` that never returns) can't keep the caller
-// frozen. The abandoned work finishes on its own or dies with the process;
-// either way the caller has already moved on. This is the difference from the
-// plain cancel-then-await watchdog in MeetingSummarizer, which would still wait
-// on a non-cancellable hang.
-//
-// Returns the operation's value when it finishes before the deadline.
+// frozen. That abandonment is the difference from MeetingSummarizer's plain
+// cancel-then-await watchdog, which would still wait on a non-cancellable hang.
 func withTimeout<T: Sendable>(
     _ timeout: Duration,
     operation: @escaping @Sendable () async throws -> T
@@ -23,7 +19,7 @@ func withTimeout<T: Sendable>(
     return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
             let gate = ResumeGate()
-            // Operation path: whoever claims the gate first resumes the caller.
+            // Operation path.
             Task {
                 do {
                     let value = try await work.value
@@ -48,7 +44,6 @@ func withTimeout<T: Sendable>(
 
 // One-shot guard so exactly one racer resolves the continuation. NSLock keeps it
 // synchronous (an actor would force a Task hop inside the continuation body).
-// Mirrors the PartialDiff pattern in ParakeetEngine.
 private final class ResumeGate: @unchecked Sendable {
     private let lock = NSLock()
     private var resolved = false

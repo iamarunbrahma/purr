@@ -7,7 +7,7 @@
 # code-signs it so the OS will route TCC prompts to it.
 
 APP_NAME      := Purr
-BUNDLE_ID     := com.arunbrahma.purr
+BUNDLE_ID     := com.arunbrahma.hello
 CONFIG        := release
 BUILD_DIR     := .build
 APP_DIR       := dist/$(APP_NAME).app
@@ -28,12 +28,26 @@ RES_DIR       := $(CONTENTS)/Resources
 FRAMEWORKS_DIR:= $(CONTENTS)/Frameworks
 ENTITLEMENTS  := Resources/$(APP_NAME).entitlements
 INFO_PLIST    := Resources/Info.plist
-# Developer ID code-signing identity and notarization keychain profile. The
-# identity must exist in the login keychain (verify with
-# `security find-identity -p codesigning -v`); the profile is created once with
-# `xcrun notarytool store-credentials`. Override either on the command line.
-DEV_ID         ?= Developer ID Application: Arun Brahma (5JCFRMC367)
+# Developer ID code-signing identity and notarization keychain profile.
+# Defaults to ad-hoc ("-") so `make app` builds and runs on a clean checkout
+# with no certificate in the keychain. For a real release, override DEV_ID
+# with an identity from `security find-identity -p codesigning -v`; the
+# NOTARY_PROFILE keychain profile is created once with
+# `xcrun notarytool store-credentials`.
+DEV_ID         ?= -
 NOTARY_PROFILE ?= purr-app
+# Hardened Runtime (Library Validation) refuses to load an ad-hoc-signed
+# embedded framework at all, even alongside an ad-hoc-signed outer app -
+# https://developer.apple.com/forums/thread/695481 - so it can only be
+# enabled once a real Developer ID identity is signing everything. Ad-hoc
+# local builds skip it entirely and fall back to the legacy, more permissive
+# validation path; notarization (which requires it) always supplies a real
+# DEV_ID via `make dmg`.
+ifeq ($(DEV_ID),-)
+CODESIGN_OPTS :=
+else
+CODESIGN_OPTS := --options runtime --timestamp
+endif
 # llama.cpp is shipped as an XCFramework binary target. SwiftPM stages
 # the macOS-arm64 slice next to the built executable; we copy that into
 # the bundle's Frameworks/ and add the rpath the executable needs to
@@ -75,10 +89,10 @@ app:
 	@install_name_tool -add_rpath @executable_path/../Frameworks $(MACOS_DIR)/$(APP_NAME) 2>/dev/null || true
 	@# Sign the embedded framework first so the nested code is already valid
 	@# when we sign the outer bundle (no --deep: Apple recommends signing
-	@# inside-out for distribution). --options runtime turns on the Hardened
-	@# Runtime that notarization requires; --timestamp adds a secure timestamp.
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
+	@# inside-out for distribution). CODESIGN_OPTS adds Hardened Runtime +
+	@# a secure timestamp only when DEV_ID is a real identity (see above).
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
 	@# Bump the bundle's mtime. macOS keys its icon/LaunchServices cache on the
 	@# bundle modification date; copying a new AppIcon.icns into an existing
 	@# .app leaves the bundle dir mtime stale, so Finder keeps serving the old

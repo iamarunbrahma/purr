@@ -19,10 +19,9 @@ import os.log
 //   4. The IO callback resamples the tap format (commonly 48 kHz) down to
 //      16 kHz mono and appends into a growing buffer.
 //
-// The tap is `.unmuted`, so the user still hears their call normally. macOS
-// prompts once for "System Audio Recording" permission on the first start;
-// if denied the capture simply yields silence and the meeting falls back to
-// a microphone-only transcript.
+// macOS prompts once for "System Audio Recording" permission on first start;
+// if denied the capture yields silence and the meeting falls back to a
+// microphone-only transcript.
 @available(macOS 14.2, *)
 final class SystemAudioCapture {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -32,34 +31,30 @@ final class SystemAudioCapture {
     private var tapFormat: AVAudioFormat?
     private let targetFormat: AVAudioFormat
     // The tap delivers samples only while system audio is actually playing, so
-    // a flat concatenation collapses the silent gaps. Keep each delivered chunk
-    // with the host time it was captured at so stop() can rebuild a continuous,
+    // a flat concatenation would collapse the silent gaps. Each chunk carries
+    // the host time it arrived at, letting stop() rebuild a continuous,
     // mic-aligned buffer. Guarded by `lock`.
     private var capturedChunks: [(host: UInt64, data: [Float])] = []
     private let lock = NSLock()
-    // Live RMS of the tapped audio, mirrored to the meeting HUD's waveform so it
-    // reacts to system / remote sound and not just the mic. Yielded from the IO
-    // callback; the consumer blends it with the mic level. Like the captured
-    // chunks, this goes quiet when nothing plays (the tap delivers no buffers
-    // during silence), so the consumer decays it back to rest.
+    // Live RMS of the tapped audio, yielded from the IO callback so the meeting
+    // HUD's waveform reacts to remote sound and not just the mic. Goes quiet
+    // when nothing plays, so the consumer decays it back to rest.
     private var levelContinuation: AsyncStream<Float>.Continuation?
     private(set) var levels: AsyncStream<Float> = AsyncStream { _ in }
     private let queue = DispatchQueue(
-        label: "com.arunbrahma.purr.systemaudio", qos: .userInitiated)
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "systemaudio")
+        label: "com.arunbrahma.hello.systemaudio", qos: .userInitiated)
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "systemaudio")
 
-    // Peak magnitude below this (~-60 dBFS) means the tap delivered effectively
-    // only silence. The usual cause is a denied "System Audio Recording"
-    // permission: macOS still creates the tap and runs its IOProc, it just
-    // zero-fills every buffer while the output device is active (e.g. a video is
-    // playing). Such a buffer has nothing to transcribe or diarize, so we treat
-    // it as "no system audio" and let the meeting fall back to the mic.
+    // A peak below this (~-60 dBFS) means the tap delivered only silence. The
+    // usual cause is a denied "System Audio Recording" permission: macOS still
+    // creates the tap and runs its IOProc, it just zero-fills every buffer while
+    // the output device is active. Nothing there to transcribe or diarize, so
+    // treat it as "no system audio" and fall back to the mic.
     private static let silenceFloor: Float = 0.001
 
-    // Set by stop(): true when the tap delivered a substantial buffer that was
-    // effectively silent - the signature of an active output device with the
-    // System Audio Recording permission denied. Read once after stop() so the
-    // meeting can tell the user why remote voices weren't captured.
+    // Set by stop(): a substantial but effectively silent buffer is the
+    // signature of an active output device with the recording permission
+    // denied, so the meeting can tell the user why remote voices went missing.
     private(set) var lastCaptureSilentButActive = false
 
     init() {
@@ -77,12 +72,10 @@ final class SystemAudioCapture {
         self.targetFormat = format
     }
 
-    // Public entry point. Wraps the actual start sequence in a catch that
-    // self-cleans on failure: a process tap, aggregate device, or IOProc
-    // allocated before a later step threw is a system-level audio object
-    // that would otherwise leak until the process exits (Swift's ARC only
-    // reclaims the wrapper, not the C-side registration). Routing the
-    // cleanup through stop() keeps all teardown in one place.
+    // Self-cleans on failure: a tap, aggregate device, or IOProc allocated
+    // before a later step threw is a system-level audio object that would leak
+    // until the process exits, since ARC reclaims only the Swift wrapper and
+    // not the C-side registration.
     func start() throws {
         do {
             try startInternal()
@@ -103,9 +96,8 @@ final class SystemAudioCapture {
             self.levelContinuation = continuation
         }
 
-        // Tap every process except ourselves, mixed down to mono. Excluding
-        // our own process keeps Purr's own sounds out of the capture;
-        // if our process object isn't resolvable yet we just tap everything.
+        // Excluding our own process keeps Purr's sounds out of the capture. If
+        // that process object isn't resolvable yet we just tap everything.
         let excluded = ownProcessObject().map { [$0] } ?? []
         let description = CATapDescription(monoGlobalTapButExcludeProcesses: excluded)
         description.uuid = UUID()
@@ -132,8 +124,7 @@ final class SystemAudioCapture {
             throw SystemAudioError.unsupportedTapFormat
         }
 
-        // A private aggregate device wrapping the default output device and
-        // the tap. Private keeps it out of the system-wide device list.
+        // Private keeps this aggregate out of the system-wide device list.
         let outputDevice = try defaultOutputDevice()
         let outputUID = try deviceUID(outputDevice)
         let aggregateDescription: [String: Any] = [
@@ -180,9 +171,8 @@ final class SystemAudioCapture {
         log.info("System audio capture started - tap format \(String(describing: format), privacy: .public)")
     }
 
-    // Stops capture, tears down the Core Audio objects, and returns whatever
-    // 16 kHz mono audio was captured. Safe to call even if start() failed
-    // partway - each teardown step is guarded.
+    // Returns whatever 16 kHz mono audio was captured. Safe to call even if
+    // start() failed partway - each teardown step is guarded.
     func stop(alignedTo micStartHostTime: UInt64) -> [Float] {
         if aggregateID != AudioObjectID(kAudioObjectUnknown), let procID {
             AudioDeviceStop(aggregateID, procID)
@@ -209,18 +199,14 @@ final class SystemAudioCapture {
         lock.unlock()
 
         let rawCount = chunks.reduce(0) { $0 + $1.data.count }
-        // Rebuild a continuous buffer whose index 0 lines up with the mic's
-        // first sample, with silence restored where the tap delivered nothing.
         let aligned = Self.reconstruct(chunks: chunks, micStartHostTime: micStartHostTime)
 
-        // Distinguish a real capture from a permission-denied silent one: a
-        // denied tap returns *non-empty* buffers of zeros whenever the output
-        // device was active, which would otherwise push the meeting into the
-        // dual-track path and make the diarizer choke on silence. Measure the
-        // level and return empty for an effectively-silent capture so the
-        // caller's `isEmpty` check routes it to the mic-only path. Use the raw
-        // sample count for the "active" test so reconstructed leading silence
-        // can't inflate it.
+        // A denied tap returns *non-empty* buffers of zeros whenever the output
+        // device was active, which would push the meeting into the dual-track
+        // path and make the diarizer choke on silence. Returning empty instead
+        // routes the caller's `isEmpty` check to the mic-only path. The "active"
+        // test uses the raw count so reconstructed leading silence can't
+        // inflate it.
         var peak: Float = 0
         if !aligned.isEmpty {
             vDSP_maxmgv(aligned, 1, &peak, vDSP_Length(aligned.count))
@@ -236,13 +222,12 @@ final class SystemAudioCapture {
         return silent ? [] : aligned
     }
 
-    // Rebuilds a continuous, mic-aligned 16 kHz buffer from the tap's chunks.
-    // Each chunk is placed at (chunkHost - micStartHost) seconds and the gaps
-    // are zero-filled, restoring a true timeline that lines up with the mic
-    // track index-for-index - so cross-track merging sorts correctly, the
-    // diarizer sees real pauses, and echo cancellation gets a time-aligned
-    // reference. Without a mic reference it aligns on the first chunk (interior
-    // gaps still restored, no leading pad).
+    // Rebuilds a continuous, mic-aligned 16 kHz buffer: each chunk is placed at
+    // (chunkHost - micStartHost) seconds and the gaps are zero-filled, so the
+    // timeline lines up with the mic track index-for-index - cross-track merging
+    // sorts correctly, the diarizer sees real pauses, and echo cancellation gets
+    // a time-aligned reference. Without a mic reference it aligns on the first
+    // chunk (interior gaps still restored, no leading pad).
     private static func reconstruct(
         chunks: [(host: UInt64, data: [Float])],
         micStartHostTime: UInt64
@@ -319,8 +304,8 @@ final class SystemAudioCapture {
         let frameCount = Int(outBuffer.frameLength)
         if frameCount == 0 { return }
         let chunk = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
-        // Host time of this buffer, on the same mach clock as the mic's AUHAL
-        // timestamp, so stop() can place the chunk at its true offset.
+        // Same mach clock as the mic's AUHAL timestamp, so stop() can place
+        // this chunk at its true offset.
         let stamp = inputTime.pointee
         let host =
             stamp.mFlags.contains(.hostTimeValid) && stamp.mHostTime != 0
@@ -329,9 +314,7 @@ final class SystemAudioCapture {
         capturedChunks.append((host: host, data: chunk))
         lock.unlock()
 
-        // Mirror this block's RMS to the meeting HUD's waveform (visualization
-        // only; the captured chunks above are untouched). The tap delivers no
-        // buffers during silence, so the consumer decays this back to rest.
+        // Visualization only - the captured chunks above are untouched.
         var rms: Float = 0
         vDSP_rmsqv(channelData, 1, &rms, vDSP_Length(frameCount))
         levelContinuation?.yield(rms)
@@ -341,10 +324,8 @@ final class SystemAudioCapture {
     // Core Audio property helpers
     // ------------------------------------------------------------------
 
-    // The audio process object for our own PID, used to exclude Purr's
-    // own sounds from the tap. Returns nil if the process hasn't registered
-    // with the audio system yet (it never output audio) - harmless, we just
-    // don't exclude ourselves.
+    // Nil when the process hasn't registered with the audio system yet (it
+    // never output audio) - harmless, we just don't exclude ourselves.
     private func ownProcessObject() -> AudioObjectID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,

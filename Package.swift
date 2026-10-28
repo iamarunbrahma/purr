@@ -12,7 +12,16 @@ let package = Package(
         // FluidAudio - Parakeet TDT v3 batch (multilingual, 10× faster than
         // Whisper Large V3 on Apple Silicon) plus Parakeet EOU streaming
         // (real-time chunked ASR with end-of-utterance detection).
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.8.0"),
+        //
+        // Pinned to the 0.15.5 minor line (not `from:`): FluidAudio 0.15.5
+        // removed the `DownloadUtils` namespace and promoted `ProgressHandler`
+        // to a top-level typealias, breaking `ParakeetEngine.swift`'s
+        // `DownloadUtils.ProgressHandler` reference on any resolve pulling
+        // 0.15.5+. SwiftPM's `from:` doesn't treat 0.x minor bumps as
+        // breaking the way SemVer does, so an unbounded `from: "0.8.0"` lets
+        // a routine resolve silently jump onto a breaking release - bound to
+        // the minor line so the next break requires a deliberate bump here.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", .upToNextMinor(from: "0.15.5")),
     ],
     targets: [
         // llama.cpp Apple XCFramework - powers Gemma 3 4B meeting summaries

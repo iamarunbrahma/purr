@@ -5,17 +5,15 @@ import os.log
 // Tracks the local install state of the Gemma 3 4B GGUF weights used by
 // MeetingSummarizer's llama.cpp backend.
 //
-// We download a single quantized GGUF (Q4_K_M, ~2.49 GB) from Hugging
-// Face and park it under ~/Library/Application Support/Purr/models/
-// alongside the Parakeet / Whisper weights so the user can find and
-// delete models without spelunking ~/Library, and the location survives
+// The single quantized GGUF (Q4_K_M, ~2.49 GB) is downloaded from Hugging Face
+// to ~/Library/Application Support/Purr/models/ alongside the Parakeet /
+// Whisper weights, so models are findable in one place and survive
 // `defaults delete`.
 //
-// The Gemma Terms of Use require a flow-down notice when exposing the
-// model's functionality through a UI; the Settings panel renders that
-// notice inline before triggering a download.
+// The Gemma Terms of Use require a flow-down notice when exposing the model's
+// functionality through a UI; Settings renders it inline before a download.
 enum LLMModelManager {
-    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "llm-models")
+    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "llm-models")
 
     static let defaultModelFilename = "gemma-3-4b-it-Q4_K_M.gguf"
     static let defaultModelLabel = "Gemma 3 4B Instruct (Q4_K_M)"
@@ -27,11 +25,11 @@ enum LLMModelManager {
     static let licenseURL = URL(string: "https://ai.google.dev/gemma/terms")!
     static let licenseName = "Gemma Terms of Use"
 
-    // Pinned to the canonical Q4_K_M GGUF published by `unsloth` on
-    // Hugging Face. Source of truth:
+    // Pinned to the canonical Q4_K_M GGUF published by `unsloth`. Source of
+    // truth:
     //   https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/blob/main/gemma-3-4b-it-Q4_K_M.gguf
-    // Verifying before the file reaches llama.cpp closes the supply-chain
-    // path through a compromised HF mirror or tampered CDN edge.
+    // Verifying before the file reaches llama.cpp closes the supply-chain path
+    // through a compromised HF mirror or tampered CDN edge.
     static let defaultModelSHA256 =
         "04a43a22e8d2003deda5acc262f68ec1005fa76c735a9962a8c77042a74a7d19"
     static let defaultModelExpectedSize: Int64 = 2_489_894_016
@@ -53,12 +51,11 @@ enum LLMModelManager {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
             return false
         }
-        // Guard against a previous partial download that left a stub file
-        // behind. Real Q4_K_M weights are 2.3 GB+; anything radically
-        // smaller is treated as missing so the next download retries
-        // cleanly.
+        // Guard against a partial download leaving a stub behind. Real Q4_K_M
+        // weights are 2.3 GB+, so anything far smaller counts as missing and
+        // the next download retries cleanly.
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        return size > 1_000_000_000  // 1 GB threshold
+        return size > 1_000_000_000
     }
 
     static func delete() throws {
@@ -69,17 +66,14 @@ enum LLMModelManager {
         }
     }
 
-    // Streams the GGUF to disk via URLSession.download. We bypass the
-    // higher-level `URLSession.download(from:)` async API in favour of a
-    // delegate so we get incremental progress for the UI. Cancellation is
-    // handled at the Task level by callers - the delegate just reports
-    // bytes-written.
+    // Streams the GGUF to disk. Uses a delegate rather than the higher-level
+    // `URLSession.download(from:)` async API to get incremental progress for
+    // the UI; cancellation stays at the caller's Task level.
     @discardableResult
     static func download(progress: @escaping (Double) -> Void) async throws -> URL {
         let destination = localURL
-        // Defensive: if a previous corrupted file is sitting at the final
-        // path (size below the install threshold but non-zero) it would
-        // shadow the new download until we explicitly remove it.
+        // A previous corrupted file at the final path would shadow the new
+        // download until explicitly removed.
         if FileManager.default.fileExists(atPath: destination.path) {
             try? FileManager.default.removeItem(at: destination)
         }
@@ -91,8 +85,8 @@ enum LLMModelManager {
             progress: progress
         )
 
-        // Verify BEFORE moving into place; a mismatched temp file is
-        // deleted so the next retry restarts from scratch.
+        // Verify BEFORE moving into place; a mismatched temp file is deleted so
+        // the next retry restarts from scratch.
         do {
             try verifyDownloadedGGUF(at: tempURL)
         } catch {
@@ -100,7 +94,6 @@ enum LLMModelManager {
             throw error
         }
 
-        // Atomic move from URLSession's temp file to the final location.
         try FileManager.default.moveItem(at: tempURL, to: destination)
         log.info(
             "Gemma GGUF installed (\(formatSize(at: destination), privacy: .public))"
@@ -108,7 +101,7 @@ enum LLMModelManager {
         return destination
     }
 
-    // Size check first - it's a free fast-fail before the multi-second streaming hash of a 2.5 GB file.
+    // Size check first - a free fast-fail before the multi-second streaming hash.
     private static func verifyDownloadedGGUF(at url: URL) throws {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         let actualSize = (attrs[.size] as? NSNumber)?.int64Value ?? -1
@@ -171,18 +164,15 @@ enum LLMModelManager {
     }
 }
 
-// URLSession-based downloader with progress reporting. Keeps state out
-// of LLMModelManager so the enum stays pure. The session uses a default
-// configuration - the GGUF is large but URLSession streams chunks to
-// disk so peak memory stays low.
+// URLSession-based downloader with progress reporting, kept separate so
+// LLMModelManager stays a stateless enum.
 private final class GGUFDownloader: NSObject, URLSessionDownloadDelegate {
     private var continuation: CheckedContinuation<URL, Error>?
     private var progressHandler: ((Double) -> Void)?
 
-    // URLSession with a delegate retains the delegate via its session,
-    // forming a session → delegate → continuation cycle that only breaks
-    // when the session is invalidated. Keep a strong ref so we can tear
-    // it down on every completion path.
+    // A delegate-based URLSession forms a session → delegate → continuation
+    // cycle that only breaks on invalidation, so hold a strong ref to tear it
+    // down on every completion path.
     private var session: URLSession?
 
     func download(from url: URL, progress: @escaping (Double) -> Void) async throws -> URL {
@@ -221,8 +211,8 @@ private final class GGUFDownloader: NSObject, URLSessionDownloadDelegate {
         _ session: URLSession, downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        // Move the URLSession temp file to a stable tmp location before
-        // returning - URLSession deletes the original on delegate return.
+        // URLSession deletes its temp file when this delegate method returns,
+        // so move it somewhere stable first.
         let stableTmp = FileManager.default.temporaryDirectory.appendingPathComponent(
             "purr-gguf-\(UUID().uuidString).gguf")
         do {

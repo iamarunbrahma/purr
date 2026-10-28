@@ -1,70 +1,74 @@
 import AppKit
 import os.log
 
-// Pastes a string at the cursor in the focused app: snapshot pasteboard,
-// write text, synth ⌘V, restore the original contents after a delay.
-//
-// Why not type the string character-by-character with
-// `CGEventKeyboardSetUnicodeString`? It works, but:
-//   - it's measurably slower for paragraphs (paste is O(1), typing is O(n))
-//   - some apps (Slack rich-text input, parts of Office) misinterpret rapid
-//     synthetic keystrokes
-//   - emojis and combining characters need extra care
-// Paste avoids all of that and is the same trick BetterTouchTool, Raycast,
-// and the dictation reference apps use.
+// Pastes a string at the cursor: snapshot pasteboard, write text, synth ⌘V,
+// restore after a delay. Not typed character-by-character - that's slower
+// for paragraphs, some apps misinterpret rapid synthetic keystrokes, and
+// emojis/combining characters need extra care.
 final class TextInserter {
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "paste")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "paste")
 
     // V on a US ANSI keyboard.
     private let kVKey: CGKeyCode = 9
 
-    // How long to wait after sending ⌘V before restoring the original
-    // pasteboard. Apps process the paste asynchronously; restore too early
-    // and you'll paste the *previous* clipboard contents instead. 250 ms is
-    // a comfortable ceiling - Slack, Notes, VS Code, Chrome, and Safari all
-    // dispatch the paste within ~50–100 ms on Apple Silicon.
+    // Restore too early and the target re-pastes the *previous* clipboard
+    // contents; 250ms comfortably covers real-world paste latency (~50-100ms).
     private let restoreDelay: TimeInterval = 0.25
 
-    // nspasteboard.org markers. Cooperative clipboard managers (Paste,
-    // Maccy, Alfred, Raycast) and Universal Clipboard honour these to
-    // skip recording or syncing sensitive, short-lived content.
+    // nspasteboard.org markers so clipboard managers skip recording this
+    // short-lived paste.
     private static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
     private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
-    // Pending pastes, drained one at a time. Each paste owns the system
-    // pasteboard from the moment it writes until restoreDelay later (when the
-    // target app has consumed the ⌘V and we restore the user's clipboard).
-    // A second insert() that fired in the meantime must NOT overwrite the
-    // pasteboard yet - it would replace the text the first paste hasn't been
-    // consumed for, and that text is lost silently. That is exactly what
-    // dropped the trailing dictation word: the final committed sentence and
-    // the session's trailing space are inserted back-to-back, so the space
-    // clobbered the sentence before the app pasted it. Serialising the writes
-    // closes that window. All callers are @MainActor, so this state is only
-    // ever touched on the main thread - no lock needed.
-    private var pasteQueue: [String] = []
+    // Drained one at a time so a second action never runs while the target
+    // hasn't consumed the first - firing early (a paste overwriting the
+    // pasteboard, or a keystroke landing before the paste is read) is what
+    // silently dropped the trailing dictated word on slow targets like tmux
+    // and Spotlight. @MainActor only, so no lock needed.
+    private enum Action {
+        case paste(String)
+        case literalSpace
+    }
+    private var actionQueue: [Action] = []
     private var draining = false
 
     func insert(_ text: String) {
         guard !text.isEmpty else { return }
-        pasteQueue.append(text)
-        guard !draining else { return }
-        draining = true
-        drainNextPaste()
+        enqueue(.paste(text))
     }
 
-    // Paste the head of the queue, then schedule the next one only after this
-    // paste's restore window elapses, so successive inserts never share the
-    // pasteboard. Mid-session sentences are seconds apart (EOU debounce), so
-    // this adds no latency there; only the final sentence + trailing space
-    // pair actually queues, and a ~restoreDelay gap at session end is invisible.
-    private func drainNextPaste() {
-        guard !pasteQueue.isEmpty else {
+    // Direct keystroke (see sendSpaceKeystroke), but still queued behind any
+    // paste ahead of it - see the comment on `actionQueue` above.
+    func insertLiteralSpace() {
+        enqueue(.literalSpace)
+    }
+
+    private func enqueue(_ action: Action) {
+        actionQueue.append(action)
+        guard !draining else { return }
+        draining = true
+        drainNextAction()
+    }
+
+    // Moves to the next action only once this one's effect has landed - a
+    // paste after its restore window, a keystroke immediately. Mid-session
+    // sentences are seconds apart (EOU debounce), so this only adds latency
+    // at session end, where it's invisible.
+    private func drainNextAction() {
+        guard !actionQueue.isEmpty else {
             draining = false
             return
         }
-        let text = pasteQueue.removeFirst()
+        switch actionQueue.removeFirst() {
+        case .paste(let text):
+            performPaste(text)
+        case .literalSpace:
+            sendSpaceKeystroke()
+            drainNextAction()
+        }
+    }
 
+    private func performPaste(_ text: String) {
         let pasteboard = NSPasteboard.general
         let snapshot = snapshotPasteboard(pasteboard)
 
@@ -80,18 +84,16 @@ final class TextInserter {
         sendCommandV()
 
         // Restore the previous contents on the main queue, then drain the next
-        // paste. We can't restore synchronously because the paste hasn't been
+        // action. We can't restore synchronously because the paste hasn't been
         // consumed yet - see the comment on `restoreDelay` above.
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) { [self] in
             restorePasteboard(pasteboard, snapshot: snapshot)
-            drainNextPaste()
+            drainNextAction()
         }
     }
 
-    // Deletes the `count` characters before the cursor by synthesising Backspace
-    // presses. Used to undo a just-pasted sentence ("scratch that"). A short gap
-    // between events stops the Window Server coalescing them, which would
-    // otherwise leave stray characters behind.
+    // Undoes a just-pasted sentence ("scratch that"). The gap between events
+    // stops the Window Server coalescing them into stray characters.
     func deleteBackward(_ count: Int) {
         guard count > 0, let source = CGEventSource(stateID: .combinedSessionState) else { return }
         let backspace: CGKeyCode = 51
@@ -104,14 +106,24 @@ final class TextInserter {
         }
     }
 
+    // A direct keystroke, not a clipboard round-trip: same technique as
+    // deleteBackward, just Space instead of Backspace. Only called from
+    // drainNextAction(), which is what makes it safe - see `actionQueue`.
+    private func sendSpaceKeystroke() {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return }
+        let space: CGKeyCode = 49
+        CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: true)?
+            .post(tap: .cghidEventTap)
+        CGEvent(keyboardEventSource: source, virtualKey: space, keyDown: false)?
+            .post(tap: .cghidEventTap)
+    }
+
     // ------------------------------------------------------------------
     // Pasteboard snapshot/restore
     // ------------------------------------------------------------------
 
-    // Capture every pasteboard item with all of its types. We snapshot the
-    // raw Data per type rather than the rendered strings/images because
-    // some pasteboard types (rich text, file lists, custom UTIs) lose
-    // information when round-tripped through their semantic accessors.
+    // Raw Data per type, not semantic accessors - rich text, file lists, and
+    // custom UTIs lose information when round-tripped through those.
     private struct PasteboardSnapshot {
         let items: [[NSPasteboard.PasteboardType: Data]]
     }
@@ -152,10 +164,8 @@ final class TextInserter {
             log.error("Could not create CGEventSource - paste injection skipped.")
             return
         }
-        // Combined session state preserves the user's actual modifier-key
-        // state. If they happened to be holding Shift, we don't want to
-        // accidentally send ⇧⌘V (= "Paste and Match Style" in many apps).
-        // The flags we set on the keyDown event override anyway.
+        // Explicit flags override the session's modifier state, so a Shift
+        // held by the user can't turn this into ⇧⌘V ("Paste and Match Style").
         let down = CGEvent(keyboardEventSource: source, virtualKey: kVKey, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: kVKey, keyDown: false)
         down?.flags = .maskCommand

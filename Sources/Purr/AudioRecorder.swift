@@ -15,7 +15,7 @@ import os.log
 // `@unchecked Sendable`; it reaches `self` via an unretained pointer and only touches
 // lock-guarded state). See Apple TN2091.
 final class AudioRecorder: @unchecked Sendable {
-    private let targetFormat: AVAudioFormat  // 16 kHz mono Float32
+    private let targetFormat: AVAudioFormat
 
     private var unit: AudioUnit?
     private var deviceSampleRate: Double = 0  // device native rate; we resample to 16 kHz
@@ -32,17 +32,17 @@ final class AudioRecorder: @unchecked Sendable {
     private var isRecording = false  // guarded by `lock`
 
     // Host time (mach_absolute_time units) of the first sample captured after
-    // start(); 0 until set. Meeting mode reads this after stop() to align the
-    // system-audio tap - which omits silent gaps - to the mic's continuous,
-    // full-length timeline. Only meaningful on a cold start (meeting mode never
-    // warm-keeps, so samples[0] is the first rendered frame). Guarded by `lock`.
+    // start(); 0 until set. Meeting mode reads it after stop() to align the
+    // system-audio tap - which omits silent gaps - to the mic's continuous
+    // timeline. Only meaningful on a cold start (meeting mode never warm-keeps,
+    // so samples[0] is the first rendered frame). Guarded by `lock`.
     private var firstSampleHostTime: UInt64 = 0
 
     private var levelContinuation: AsyncStream<Float>.Continuation?
     private var chunkContinuation: AsyncStream<[Float]>.Continuation?
     private(set) var levels: AsyncStream<Float> = AsyncStream { _ in }
-    // Each yield is a fresh 16 kHz mono PCM chunk produced by the input callback.
-    // Streaming engines pipe these into their session; batch engines use stop().
+    // Fresh 16 kHz mono PCM chunks from the input callback. Streaming engines
+    // pipe these into their session; batch engines use stop().
     private(set) var chunks: AsyncStream<[Float]> = AsyncStream { _ in }
 
     // Push-to-talk recorders (dictation, voice edit) opt in; see stop(). Meeting leaves false.
@@ -50,9 +50,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var idleTeardownItem: DispatchWorkItem?
     private static let warmWindow: TimeInterval = 10  // mic stays warm this long after stop()
     private var openedDeviceID = AudioDeviceID(0)
-    // Decided at open time from the device actually in use: only stable wired inputs are
-    // warm-kept. Bluetooth (often surfaced as an aggregate/virtual device whose transport
-    // type isn't "bluetooth") releases immediately so the orange indicator never lingers.
+    // Decided at open time from the device actually in use; see isWarmEligible.
     private var warmEligible = false
 
     // Live listeners that follow a default-input or sample-rate change and reconfigure
@@ -82,7 +80,7 @@ final class AudioRecorder: @unchecked Sendable {
     // check watches it to tell a live unit from a started-but-NoConnection one.
     private var renderSuccessCount = 0
 
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "audio")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "audio")
 
     init() {
         guard
@@ -115,8 +113,8 @@ final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         firstSampleHostTime = 0
-        // Prepend the lookback (audio from just before the keypress). Only non-empty
-        // when a warm unit was already running, so a cold start is unaffected.
+        // Prepend the lookback (audio from just before the keypress); empty unless a
+        // warm unit was already running, so a cold start is unaffected.
         if warmReuse, !lookbackBuffer.isEmpty {
             samples.append(contentsOf: lookbackBuffer)
         }
@@ -170,8 +168,8 @@ final class AudioRecorder: @unchecked Sendable {
         reconfigureItem?.cancel()
         reconfigureItem = nil
 
-        // Keep the mic warm for a short window so the next press is instant, unless this
-        // recorder didn't opt in or the device isn't warm-eligible (Bluetooth/aggregate).
+        // Keep the mic warm so the next press is instant, unless this recorder didn't
+        // opt in or the device isn't warm-eligible (Bluetooth/aggregate).
         if allowsWarmKeeping, unit != nil, warmEligible {
             scheduleIdleTeardown()
         } else {
@@ -186,11 +184,10 @@ final class AudioRecorder: @unchecked Sendable {
             "Audio capture stopped - \(copy.count, privacy: .public) samples (~\(String(format: "%.2f", audioSeconds), privacy: .public)s of audio over \(String(format: "%.2f", wallClock), privacy: .public)s wall clock = \(String(format: "%.0f", coverage), privacy: .public)% coverage, renderErrors=\(self.renderErrorCount, privacy: .public), lastRenderErr=\(self.lastRenderError, privacy: .public))"
         )
 
-        // Signal level of the captured buffer. A near-silent capture and a
-        // healthy one produce the same sample count and coverage above; only
-        // the level tells them apart, so log peak + RMS in dBFS to disambiguate
-        // "no speech" reports (real speech peaks around -20…-3 dBFS; a dead mic
-        // sits near the -120 floor).
+        // A near-silent capture and a healthy one produce the same sample count and
+        // coverage above; only the level tells them apart. Peak + RMS in dBFS
+        // disambiguate "no speech" reports (real speech peaks around -20…-3 dBFS;
+        // a dead mic sits near the -120 floor).
         if !copy.isEmpty {
             var peak: Float = 0
             var rms: Float = 0
@@ -205,16 +202,16 @@ final class AudioRecorder: @unchecked Sendable {
         return copy
     }
 
-    // First-sample host time of the most recent session (see firstSampleHostTime).
-    // Valid to read after stop(); start() resets it. 0 if nothing was captured.
+    // See firstSampleHostTime. Valid after stop(); start() resets it, and it stays
+    // 0 if nothing was captured.
     var captureStartHostTime: UInt64 {
         lock.lock()
         defer { lock.unlock() }
         return firstSampleHostTime
     }
 
-    // Force-release the mic now (used after a wake-up failure so the next press
-    // re-acquires a fresh device). Safe to call when already stopped.
+    // Force-release the mic now, so the next press re-acquires a fresh device
+    // (used after a wake-up failure). Safe to call when already stopped.
     func invalidate() {
         teardownAUHAL()
     }
@@ -240,8 +237,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         // `self.unit` is assigned only once the unit is fully started. If any step below
         // throws (e.g. CurrentDevice returns -10851 on an aggregate device mid-switch),
-        // this disposes the half-built unit so we never leave a leaked, uninitialized
-        // zombie that `unit != nil` checks would mistake for a live recorder.
+        // dispose the half-built unit so `unit != nil` never sees a zombie.
         var started = false
         defer {
             if !started {
@@ -289,7 +285,6 @@ final class AudioRecorder: @unchecked Sendable {
                 UInt32(MemoryLayout<AudioDeviceID>.size)), "CurrentDevice")
         openedDeviceID = deviceID
 
-        // Read the device's native input format; reject a zero/disconnected device.
         var deviceFormat = AudioStreamBasicDescription()
         var fmtSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         try check(
@@ -331,8 +326,8 @@ final class AudioRecorder: @unchecked Sendable {
         converter = conv
         inputBuffer = inBuf
 
-        // Point a 1-buffer AudioBufferList at the input PCM buffer's channel memory so
-        // AudioUnitRender writes directly into it (no per-callback allocation).
+        // Alias the input PCM buffer's channel memory so AudioUnitRender writes
+        // directly into it (no per-callback allocation).
         let abl = AudioBufferList.allocate(maximumBuffers: 1)
         abl[0] = AudioBuffer(
             mNumberChannels: 1,
@@ -384,8 +379,8 @@ final class AudioRecorder: @unchecked Sendable {
         lock.unlock()
     }
 
-    // Keep the warm unit alive; release it (and the indicator) if no new recording
-    // starts within the window.
+    // Release the warm unit (and the indicator) if no new recording starts within
+    // the window.
     private func scheduleIdleTeardown() {
         idleTeardownItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -523,9 +518,8 @@ final class AudioRecorder: @unchecked Sendable {
         let recording = isRecording
         lock.unlock()
         // Only reconfigure to keep an active recording alive. A device change while merely
-        // warm needs no live rebuild - start() reopens on a changed device and the idle
-        // timer releases the warm unit. Rebuilding here would cancel that idle timer and
-        // strand the unit (orange indicator stuck on).
+        // warm needs no rebuild - start() reopens on a changed device - and rebuilding here
+        // would cancel the idle timer and strand the unit (orange indicator stuck on).
         guard recording else { return }
         let newDefault = Self.currentDefaultInputDeviceID()
         let boundRate = Self.nominalSampleRate(of: openedDeviceID)
@@ -651,7 +645,6 @@ final class AudioRecorder: @unchecked Sendable {
             frames > 0, Int(frames) <= Self.maxFrames
         else { return noErr }
 
-        // AudioUnitRender writes the device-rate mono floats into inputBuffer's memory.
         abl[0].mDataByteSize = frames * 4
         let err = AudioUnitRender(au, flags, ts, bus, frames, abl.unsafeMutablePointer)
         if err != noErr {
@@ -664,7 +657,6 @@ final class AudioRecorder: @unchecked Sendable {
         lastRenderError = noErr
         inBuf.frameLength = frames
 
-        // Resample to 16 kHz mono.
         let ratio = 16_000.0 / deviceSampleRate
         let outCapacity = AVAudioFrameCount(Double(frames) * ratio + 16)
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCapacity)
@@ -712,12 +704,9 @@ final class AudioRecorder: @unchecked Sendable {
 
         chunkContinuation?.yield(chunk)
 
-        // RMS of the block drives the HUD waveform. RMS (not peak) tracks
-        // perceived loudness and is steadier than a transient-driven peak; the
-        // HUD maps it through a fixed dBFS window and gates it on the loudness
-        // envelope's crest factor (gain-invariant, so the OS / Bluetooth-firmware
-        // AGC can't lift quiet noise past the gate). Visualization only - the
-        // captured `samples` are untouched.
+        // RMS (not peak) of the block drives the HUD waveform: it tracks perceived
+        // loudness and is steadier than a transient-driven peak. Visualization only -
+        // the captured `samples` are untouched.
         var rms: Float = 0
         vDSP_rmsqv(channel, 1, &rms, vDSP_Length(count))
         levelContinuation?.yield(rms)

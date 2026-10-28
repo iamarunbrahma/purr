@@ -1,11 +1,8 @@
 import Foundation
 
-// Common surface for every speech-to-text backend we ship: batch
-// `transcribe(samples:)` and streaming `makeStreamingSession()`.
-//
-// Engines that don't support streaming (currently Whisper) throw
-// `EngineError.streamingNotSupported`; the coordinator transparently falls
-// back to batch mode for those.
+// Common surface for every speech-to-text backend we ship. Engines that don't
+// support streaming (currently Whisper) throw `EngineError.streamingNotSupported`
+// from makeStreamingSession(); the coordinator falls back to batch mode for those.
 protocol TranscriptionEngine: AnyObject {
     var supportsStreaming: Bool { get }
 
@@ -16,15 +13,14 @@ protocol TranscriptionEngine: AnyObject {
 
 // Events from a live dictation session, in arrival order:
 //
-// * `.partial(suffix:)` — verbatim new tokens since the last partial.
-//   Append-only with the model's native spacing.
-// * `.endOfUtterance(rawAccumulated:)` — silence boundary or final
-//   flush. The consumer subtracts the previous boundary's raw text to
-//   isolate the just-completed utterance, runs PostProcessor, and
-//   reconciles the typed text in place.
+// * `.partial(suffix:)` — verbatim new tokens since the last partial,
+//   append-only with the model's native spacing.
+// * `.endOfUtterance(rawAccumulated:)` — silence boundary or final flush. The
+//   consumer subtracts the previous boundary's raw text to isolate the completed
+//   utterance, runs PostProcessor, and reconciles the typed text in place.
 //
-// Single AsyncStream guarantees ordering between partial typing and
-// EOU corrections.
+// A single AsyncStream guarantees ordering between partial typing and EOU
+// corrections.
 enum StreamingEvent: Equatable {
     case partial(suffix: String)
     case endOfUtterance(rawAccumulated: String)

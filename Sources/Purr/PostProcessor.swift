@@ -11,12 +11,10 @@ struct PostProcessor {
     var customVoiceCommands: [VoiceCommandEntry]
     var dictionary: [DictionaryEntry]
 
-    // Debug-level instrumentation so the filler/voice-command/dictionary
-    // passes can be observed live (including from the Smart Typing path,
-    // which calls apply() once per utterance). Watch with:
-    //   log stream --predicate 'subsystem == "com.arunbrahma.purr"
+    // Watch the passes live with:
+    //   log stream --predicate 'subsystem == "com.arunbrahma.hello"
     //   AND category == "postprocess"' --level debug
-    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "postprocess")
+    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "postprocess")
 
     func apply(_ raw: String) -> ProcessResult {
         var text = raw
@@ -52,13 +50,12 @@ struct PostProcessor {
 
         // Whitespace cleanup, in order:
         //   1. collapse runs of spaces/tabs,
-        //   2. pull a stray space into the punctuation a voice command inserted
-        //      ("do it ?" -> "do it?") - only the sentence marks, never the
-        //      emoji faces or opening brackets that carry intentional spacing,
-        //   3. strip spaces hugging a "new line"/"new paragraph" break
-        //      ("plan \n okay" -> "plan\nokay"),
-        //   4. trim leading/trailing spaces (but keep a leading/trailing newline
-        //      so a "new line"-only utterance still carries its break).
+        //   2. pull a stray space into voice-command punctuation ("do it ?" -> "do
+        //      it?") - sentence marks only, never the emoji faces or opening
+        //      brackets that carry intentional spacing,
+        //   3. strip spaces hugging a "new line" break ("plan \n okay" -> "plan\nokay"),
+        //   4. trim leading/trailing spaces, keeping newlines so a "new line"-only
+        //      utterance still carries its break.
         text = text.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
         text = text.replacingOccurrences(
             of: #"[ \t]+([,.?!…])"#, with: "$1", options: .regularExpression)
@@ -73,10 +70,9 @@ struct PostProcessor {
 
     struct ProcessResult {
         var text: String
-        // "scratch that" / "delete that" that found nothing to undo within this
-        // utterance: the streaming coordinator drops this many already-committed
-        // chunks; the batch path uses it to hint that cross-dictation undo needs
-        // Smart Typing.
+        // "scratch that" / "delete that" with nothing to undo in this utterance:
+        // the streaming coordinator drops this many already-committed chunks; the
+        // batch path uses it to hint that cross-dictation undo needs Smart Typing.
         var dropPreviousChunks: Int
     }
 
@@ -85,16 +81,14 @@ struct PostProcessor {
     // ------------------------------------------------------------------
 
     private func removeFillers(_ text: String) -> String {
-        // Sound-based hesitations only. We deliberately do NOT strip
-        // "like", "you know", "I mean", "basically", "literally",
-        // "well", "so", etc. - they're discourse markers that often
-        // *are* what the user intended ("I like apples"), so false
-        // positives hurt more than the noise helps.
+        // Sound-based hesitations only. We deliberately do NOT strip "like", "you
+        // know", "basically", etc. - they're discourse markers that often *are*
+        // what the user intended ("I like apples"), so false positives hurt more
+        // than the noise helps.
         //
-        // Longer alternatives precede shorter ones (uhm before um/uh,
-        // erm before er, ahem before ah, mhm before hm) so the regex
-        // engine doesn't snap the shorter prefix and leave a stray
-        // letter behind.
+        // Longer alternatives precede shorter ones (uhm before um/uh, erm before
+        // er, ahem before ah, mhm before hm) so the regex engine doesn't snap the
+        // shorter prefix and leave a stray letter behind.
         let fillerPattern =
             #"\b(?:u+h+[\s-]*h+u+h+|u+h+m+|u+m+|u+h+|e+r+m+|e+r+|a+h+e+m+|a+h+|m+m+[\s-]*h+m*|m+h+m+|h+m+|m+m+m+)\b[,.!?]?\s*"#
         return text.replacingOccurrences(
@@ -104,11 +98,10 @@ struct PostProcessor {
         )
     }
 
-    // Strip the user's custom filler words/phrases. Whole-word and
-    // case-insensitive, absorbing a trailing comma/period and the following
-    // space — the same cleanup the built-in pass does — so a removed filler
-    // doesn't leave an orphan comma or double space behind. This is how a
-    // user opts into removing words the built-in pass deliberately keeps.
+    // Strip the user's custom filler words/phrases - how they opt into removing
+    // words the built-in pass deliberately keeps. Absorbs a trailing comma/period
+    // and the following space, as the built-in pass does, so a removed filler
+    // doesn't leave an orphan comma or double space behind.
     private func removeCustomFillers(_ text: String) -> String {
         var result = text
         for entry in customFillerWords {
@@ -186,9 +179,9 @@ struct PostProcessor {
         return (kept.joined(separator: " "), reachedBeyond)
     }
 
-    // True when a sentence is exactly "scratch that" / "delete that", ignoring
+    // True only when a sentence is exactly "scratch that" / "delete that", ignoring
     // case and trailing punctuation (Parakeet emits "Scratch that.", sometimes
-    // "Scratch that!"). Strict otherwise, so "scratch that idea" stays text.
+    // "Scratch that!"), so "scratch that idea" stays text.
     private func isBacktrackCommand(_ sentence: String) -> Bool {
         var s = sentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         while let last = s.last, ".?!…,".contains(last) { s.removeLast() }
@@ -197,8 +190,7 @@ struct PostProcessor {
     }
 
     // Split into sentences, keeping each one's terminal punctuation. Marks the
-    // boundary after a run of . ? ! … followed by whitespace, then splits on the
-    // marker - same replacingOccurrences idiom as the command passes above.
+    // boundary after a run of . ? ! … followed by whitespace, then splits on it.
     private func splitIntoSentences(_ text: String) -> [String] {
         let marked = text.replacingOccurrences(
             of: #"([.?!…]+)\s+"#, with: "$1\u{1}", options: .regularExpression)
@@ -207,10 +199,9 @@ struct PostProcessor {
             .filter { !$0.isEmpty }
     }
 
-    // Apply the user's custom voice commands after the built-ins. Longest
-    // phrases first so a command that is a prefix of another isn't shadowed.
-    // A custom phrase that duplicates a built-in won't fire — the built-in
-    // already replaced it; custom commands are for new phrases.
+    // Applied after the built-ins, longest phrases first so a command that is a
+    // prefix of another isn't shadowed. A custom phrase duplicating a built-in
+    // won't fire - the built-in already replaced it.
     private func applyCustomCommands(_ text: String) -> String {
         var result = text
         let entries =
@@ -259,7 +250,6 @@ struct PostProcessor {
         return result
     }
 
-    // A built-in voice command category, kept grouped for readability.
     private struct CommandCategory {
         let replacements: [(pattern: String, replacement: String)]
     }
@@ -378,10 +368,9 @@ struct PostProcessor {
         for entry in dictionary {
             let escaped = NSRegularExpression.escapedPattern(for: entry.from)
             let pattern = #"\b"# + escaped + #"\b"#
-            // entry.to is user-typed; treat it as a literal replacement, not a
-            // template. Without escaping, "$1" / "\0" become back-references and
-            // silently delete or mangle the matched text (e.g. dollar amounts,
-            // file paths).
+            // entry.to is user-typed; escape it so "$1" / "\0" stay literal instead
+            // of becoming back-references that silently mangle the matched text
+            // (e.g. dollar amounts, file paths).
             let replacement = NSRegularExpression.escapedTemplate(for: entry.to)
             result = result.replacingOccurrences(
                 of: pattern,

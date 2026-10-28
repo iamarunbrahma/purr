@@ -3,16 +3,14 @@ import CEcho
 // Acoustic echo cancellation for meeting mode.
 //
 // When the user listens to a call through speakers, the microphone re-records
-// the remote participants' audio. Left alone, that echo pollutes the local
-// "You" transcript with remote speech and can make the diarizer invent
-// phantom speakers. SystemAudioCapture gives us a clean digital copy of
-// exactly what played out the speakers - an ideal far-end reference - so we
-// can subtract the echo back out of the mic signal.
+// the remote participants. That echo pollutes the local "You" transcript and
+// can make the diarizer invent phantom speakers. SystemAudioCapture provides a
+// clean digital copy of what played out the speakers - an ideal far-end
+// reference - so the echo can be subtracted back out of the mic signal.
 //
-// This wraps the vendored SpeexDSP echo canceller (see Sources/CEcho): a
-// linear adaptive filter plus the SpeexDSP preprocessor's residual-echo
-// suppressor. Processing is offline over the whole recording, matching the
-// record-then-process meeting flow.
+// Wraps the vendored SpeexDSP echo canceller (see Sources/CEcho). Processing is
+// offline over the whole recording, matching the record-then-process meeting
+// flow.
 enum EchoCanceller {
     // 10 ms at 16 kHz - SpeexDSP's adaptive filter wants a 10-20 ms frame.
     private static let frameSize = 160
@@ -21,11 +19,10 @@ enum EchoCanceller {
     private static let filterLength = 4800
     private static let sampleRate = 16_000
 
-    // Returns the microphone signal with `reference` (the system audio that
-    // leaked into it) cancelled out. Both inputs are 16 kHz mono Float32; the
-    // result matches `mic` in length. If the canceller can't be created the
-    // mic signal is returned unchanged - a missing pass is better than no
-    // transcript.
+    // Returns `mic` with `reference` (the system audio that leaked into it)
+    // cancelled out. Both inputs are 16 kHz mono Float32 and the result matches
+    // `mic` in length. If the canceller can't be created the mic signal passes
+    // through unchanged - a missing pass beats no transcript.
     static func process(mic: [Float], reference: [Float]) -> [Float] {
         guard !mic.isEmpty else { return mic }
         guard

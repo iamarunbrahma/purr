@@ -183,7 +183,7 @@ To uninstall completely, quit Purr, drag `Purr.app` to the Trash, then remove it
 
 ```bash
 rm -rf ~/Library/Application\ Support/Purr   # models + meeting transcripts
-defaults delete com.arunbrahma.purr          # preferences
+defaults delete com.arunbrahma.hello          # preferences
 ```
 
 macOS can't run cleanup code when an app is dragged to the Trash, so those are the only leftovers. Because every model now lives under that single folder, app-cleaner utilities that search for "Purr" find all of it too.

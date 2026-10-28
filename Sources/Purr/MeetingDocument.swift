@@ -1,29 +1,25 @@
+import AVFoundation
 import FluidAudio
 import Foundation
 import os.log
 
 // Merges a Parakeet ASRResult with a list of TimedSpeakerSegment into a
-// readable Markdown transcript with `**Speaker N:** ...` blocks.
-//
-// Merge strategy: each token's midpoint chooses a speaker. Consecutive
-// same-speaker tokens get concatenated verbatim - Parakeet's BPE tokens
-// already carry leading spaces on word boundaries, so inserting our own
-// spaces breaks subwords ("H" + "ello" -> "H ello"). TranscriptCleaner
-// trims any leading whitespace at utterance boundaries. We rewrite
-// FluidAudio's stable speaker IDs ("speaker_0001") to display labels
-// ("Speaker 1") in the order they first speak.
+// readable Markdown transcript with `**Speaker N:** ...` blocks. Each
+// token's midpoint chooses a speaker; consecutive same-speaker tokens
+// concatenate verbatim (Parakeet's BPE tokens already carry leading spaces,
+// so inserting our own breaks subwords: "H" + "ello" -> "H ello"). Stable
+// speaker IDs ("speaker_0001") become display labels ("Speaker 1") in the
+// order they first speak.
 enum MeetingDocument {
-    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "meetingdoc")
+    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "meetingdoc")
 
     struct Output {
         let markdown: String
         let recordedAt: Date
     }
 
-    // Mic-only variant. The microphone is the local user, so every utterance
-    // is labelled "You" (source beats voice) - no diarization runs on the mic
-    // track. A single voice never becomes "Speaker 1", and a short/quiet solo
-    // clip can't be rejected by the diarizer.
+    // Mic-only: every utterance is "You" - no diarization runs on this track,
+    // since it can't reliably separate speakers that share one microphone.
     static func format(
         localOnly asr: ASRResult,
         duration: TimeInterval,
@@ -187,13 +183,11 @@ enum MeetingDocument {
         end: Double,
         into result: inout [TimedUtterance]
     ) {
-        // Punctuation belongs to the word it follows. TDT often stamps a
-        // sentence-final "." / "?" well after the word it closes - sometimes
-        // past utteranceGapSeconds, sometimes into the next speaker's segment -
-        // so trusting its timestamp strands it on its own line or at the head of
-        // the next turn. Glue any punctuation-only token onto the current
-        // utterance and leave that utterance's end time on the spoken word, so
-        // the late mark can't distort the gap test for the tokens that follow.
+        // TDT often timestamps sentence-final punctuation well after the word
+        // it closes, sometimes into the next speaker's segment - trusting that
+        // timestamp would strand it alone or at the head of the next turn.
+        // Glue it onto the current utterance instead, keeping the utterance's
+        // end time on the spoken word so the late mark can't skew later gaps.
         if isPunctuationOnly(token), !result.isEmpty {
             result[result.count - 1].text += token
             return
@@ -223,15 +217,12 @@ enum MeetingDocument {
         do {
             return try write(data, named: name, into: meetingsDirectory())
         } catch {
-            // The configured folder was deleted or became unwritable between
-            // setup and now. Rather than lose the transcript, fall back to the
-            // default Application Support folder (no TCC consent needed, so this
-            // write effectively always succeeds). If the configured folder *was*
-            // the default, this is a harmless retry of the same path.
+            // The configured folder may have been deleted or become unwritable;
+            // fall back to the default Application Support folder rather than
+            // lose the transcript (no TCC consent needed there, so this succeeds).
             let fallback = SettingsStore.defaultMeetingsDirectory
-            // Only a *configured* folder failing is a surprising redirect worth
-            // flagging; an empty preference means we were already targeting the
-            // default, so a failure there is a plain error, not a fallback.
+            // Only warn when a *configured* folder failed - an empty preference
+            // already targets the default, so that failure is just a plain error.
             if !SettingsStore.shared.meetingsFolderPath.isEmpty {
                 log.warning(
                     "Meeting save to chosen folder failed (\(error.localizedDescription, privacy: .public)); saved to default folder \(fallback.path, privacy: .public) instead"
@@ -241,6 +232,53 @@ enum MeetingDocument {
         }
     }
 
+    // Written next to `transcriptURL` (not re-resolved via meetingsDirectory)
+    // so a fallback-folder transcript gets its audio in the same place. Mono
+    // for mic-only; stereo (left = local, right = remote) for dual-track, to
+    // keep the sides separable instead of baking a lossy mono mixdown.
+    static func writeAudio(
+        localSamples: [Float], remoteSamples: [Float]?, alongside transcriptURL: URL
+    ) throws -> URL {
+        let stereo = remoteSamples.map { !$0.isEmpty } ?? false
+        let channelCount: AVAudioChannelCount = stereo ? 2 : 1
+        guard
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: channelCount,
+                interleaved: false),
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(
+                    stereo ? max(localSamples.count, remoteSamples!.count) : localSamples.count))
+        else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        buffer.frameLength = buffer.frameCapacity
+
+        // Zero first: the two tracks are index-aligned but not always equal
+        // length, so the shorter one's tail should be silence, not garbage.
+        let left = buffer.floatChannelData![0]
+        left.update(repeating: 0, count: Int(buffer.frameLength))
+        localSamples.withUnsafeBufferPointer { left.update(from: $0.baseAddress!, count: $0.count) }
+        if stereo, let remoteSamples {
+            let right = buffer.floatChannelData![1]
+            right.update(repeating: 0, count: Int(buffer.frameLength))
+            remoteSamples.withUnsafeBufferPointer { right.update(from: $0.baseAddress!, count: $0.count) }
+        }
+
+        let audioURL = transcriptURL.deletingPathExtension().appendingPathExtension("m4a")
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: Int(channelCount),
+            AVEncoderBitRatePerChannelKey: 48_000,
+        ]
+        let file = try AVAudioFile(
+            forWriting: audioURL, settings: settings, commonFormat: .pcmFormatFloat32,
+            interleaved: false)
+        try file.write(from: buffer)
+        return audioURL
+    }
+
     private static func write(_ data: Data, named name: String, into dir: URL) throws -> URL {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)
@@ -248,9 +286,7 @@ enum MeetingDocument {
         return url
     }
 
-    // Resolves the meeting save folder: the user-chosen folder when one is set,
-    // otherwise the default Application Support folder. Selection happens in
-    // onboarding; an empty preference means "use the default".
+    // The user-chosen folder if set (from onboarding), else the default.
     static func meetingsDirectory() -> URL {
         let path = SettingsStore.shared.meetingsFolderPath
         if path.isEmpty {
@@ -280,10 +316,8 @@ enum MeetingDocument {
     // ------------------------------------------------------------------
 
     private static func speakerAt(time: Double, segments: [TimedSpeakerSegment]) -> String {
-        // First segment that contains the timestamp wins. If none does (the
-        // diarizer is usually slightly tighter than the ASR), pick the
-        // closest segment by midpoint distance - better than dropping the
-        // word.
+        // First containing segment wins; if none does (diarizer boundaries run
+        // slightly tighter than ASR), fall back to the closest by midpoint.
         for seg in segments {
             if Double(seg.startTimeSeconds) <= time, time <= Double(seg.endTimeSeconds) {
                 return seg.speakerId

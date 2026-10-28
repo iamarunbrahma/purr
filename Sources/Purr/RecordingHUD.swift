@@ -23,13 +23,11 @@ final class RecordingHUD {
     private var window: NSPanel?
     private let model = HUDModel()
 
-    // The pending auto-hide for the current transient message / copied-flash.
-    // Held so a newer HUD state can cancel it; otherwise a stale timer would
-    // hide content that has since replaced what it was scheduled for.
+    // Pending auto-hide for the current transient message / copied-flash. Held so
+    // a newer HUD state can cancel it; a stale timer would otherwise hide content
+    // that has since replaced what it was scheduled for.
     private var autoHideTask: Task<Void, Never>?
 
-    // True while a transient error/status message occupies the pill (set by
-    // showMessage, cleared when it auto-hides or a real state supersedes it).
     var isShowingMessage: Bool { model.message != nil }
 
     // Single gate the three hotkey flows run their press through. A press is a
@@ -49,17 +47,15 @@ final class RecordingHUD {
         resizeToFitContent()
         window?.orderFrontRegardless()
         position()
-        // resizeToFitContent() already sized the pill synchronously via
-        // measurePillSize(); re-measure on the next runloop tick as a safety
-        // net once SwiftUI has settled the new layout.
+        // Already sized synchronously above; re-measure on the next runloop tick
+        // as a safety net once SwiftUI has settled the new layout.
         scheduleSettledResize()
     }
 
-    // Mid-session label update. Avoids orderFrontRegardless on every tick
-    // (which triggers SwiftUI's "Publishing changes from within view
-    // updates is not allowed" warning) but still resizes+repositions so
-    // the elapsed-time label can grow "Meeting · 0:01" → "Meeting · 1:23:45"
-    // without clipping.
+    // Mid-session label update. Avoids orderFrontRegardless on every tick (which
+    // triggers SwiftUI's "Publishing changes from within view updates is not
+    // allowed" warning) but still resizes+repositions so the elapsed-time label
+    // can grow "Meeting · 0:01" → "Meeting · 1:23:45" without clipping.
     func update(_ mode: Mode) {
         model.mode = mode
         resizeToFitContent()
@@ -75,13 +71,12 @@ final class RecordingHUD {
         resizeToFitContent()
         window?.orderFrontRegardless()
         position()
-        // measurePillSize() already sized the pill for this message; re-measure
-        // on the next runloop tick as a safety net (see show(_:)).
+        // Safety net; see show(_:).
         scheduleSettledResize()
         autoHideTask = Task { @MainActor [weak self] in
             // Cancelled - a newer state superseded the message; bail without hiding.
             do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
-            self?.hide()  // clears the message and orders the window out
+            self?.hide()
         }
     }
 
@@ -115,25 +110,22 @@ final class RecordingHUD {
         model.level = meterLevel(forRMS: rms)
     }
 
-    // Reserve (or release) the pill's preview area. Called once when a
-    // smart-typing streaming session starts/ends so the pill sizes for the
-    // preview up front and never resizes per word.
+    // Reserve (or release) the pill's preview area. Called once when a smart-typing
+    // streaming session starts/ends, so the pill never resizes per word.
     func setPreviewActive(_ active: Bool) {
         model.showsPreview = active
         if !active { model.previewText = "" }
     }
 
-    // Show the current sentence's in-progress words. Just a published change -
-    // no resize, since setPreviewActive already sized the pill.
+    // No resize needed - setPreviewActive already sized the pill.
     func updatePreview(_ text: String) {
         model.previewText = text
     }
 
-    // Turns a block's RMS amplitude (0...1) into a perceptual 0...1 bar level. A
-    // crest-factor gate on the loudness envelope holds the bars flat unless the
-    // signal is modulated like speech; when open, RMS maps through a fixed dBFS
-    // window so louder speech reads taller. Thresholds are starting points - tune
-    // against the peak/RMS dBFS that AudioRecorder logs. Visualization only.
+    // Turns a block's RMS amplitude (0...1) into a perceptual 0...1 bar level: the
+    // crest gate holds the bars flat unless the signal is modulated like speech, and
+    // when open RMS maps through a fixed dBFS window so louder speech reads taller.
+    // Thresholds are starting points - tune against the dBFS AudioRecorder logs.
     private func meterLevel(forRMS rms: Float) -> Float {
         if !meterReady {
             avgEnv = rms
@@ -199,9 +191,8 @@ final class RecordingHUD {
     // Window construction
     // ------------------------------------------------------------------
 
-    // Initial panel size used only at creation; resizeToFitContent()
-    // overrides on the very first show() so we never render the placeholder
-    // size on screen.
+    // Placeholder for creation only; resizeToFitContent() overrides it on the
+    // very first show(), so this size never reaches the screen.
     private static let initialSize = NSSize(width: 200, height: 48)
     private static let panelHeight: CGFloat = 48
 
@@ -221,13 +212,13 @@ final class RecordingHUD {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        // Sits above every other app's fullscreen overlay. `.statusBar` (25)
-        // is below what macOS composites on top of another app's fullscreen
-        // Space, so the HUD vanished when Chrome / any non-native app went
-        // fullscreen. CGShieldingWindowLevel is what the lock screen uses.
-        // `.transient` + `.canJoinAllSpaces` + `.fullScreenAuxiliary` is the
-        // combination that lets an LSUIElement app's panel cross into other
-        // apps' fullscreen Spaces (we have no anchor window of our own).
+        // Sits above every other app's fullscreen overlay. `.statusBar` (25) is
+        // below what macOS composites on top of another app's fullscreen Space, so
+        // the HUD vanished when Chrome / any non-native app went fullscreen;
+        // CGShieldingWindowLevel is what the lock screen uses. `.transient` +
+        // `.canJoinAllSpaces` + `.fullScreenAuxiliary` is the combination that lets
+        // an LSUIElement app's panel cross into those Spaces (we have no anchor
+        // window of our own).
         panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
         panel.collectionBehavior = [
             .canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle, .transient,
@@ -246,19 +237,16 @@ final class RecordingHUD {
         }
     }
 
-    // Compute the pill's exact size from the current label rather than reading
-    // NSHostingView.intrinsicContentSize, which only settles a runloop tick
-    // *after* the @Published mode change - so a synchronous resize saw the
-    // previous (narrower) label and clipped a wider one like "Summarizing
-    // meeting" on the right. Measuring here is synchronous, so the pill is the
-    // right width on its first rendered frame.
+    // Compute the pill's size from the current label rather than reading
+    // NSHostingView.intrinsicContentSize, which settles a runloop tick *after* the
+    // @Published mode change - a synchronous resize saw the previous (narrower)
+    // label and clipped a wider one like "Summarizing meeting". Measuring here is
+    // synchronous, so the pill is the right width on its first rendered frame.
     //
-    // The font matches HUDView's `.system(size: 13, weight: .medium)
-    // .monospacedDigit()`, and the constants mirror HUDView's HStack: leading
-    // icon (38) + spacing (10) + text + trailing waveform (38), all inside
-    // .padding(.horizontal, 18) / .vertical, 11). Over-sizing is invisible (the
-    // panel is transparent and SwiftUI centres the pill), so a small margin
-    // absorbs sub-pixel rounding and keeps us clear of clipping.
+    // The font and constants mirror HUDView: leading icon (38) + spacing (10) +
+    // text + trailing waveform (38), inside .padding(.horizontal, 18 / .vertical,
+    // 11). Over-sizing is invisible (transparent panel, SwiftUI centres the pill),
+    // so `margin` absorbs sub-pixel rounding and keeps us clear of clipping.
     private func measurePillSize() -> NSSize {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let iconWidth: CGFloat = 38
@@ -280,8 +268,8 @@ final class RecordingHUD {
             return NSSize(width: ceil(width), height: height)
         }
 
-        // Live dictation preview: reserve a fixed width (the text head-truncates
-        // to fit) so streamed words never resize the pill.
+        // Fixed preview width (the text head-truncates to fit) so streamed words
+        // never resize the pill.
         if model.showsPreview {
             var width = hPadding + iconWidth + spacing + hudPreviewWidth
             if model.showsWaveform { width += spacing + 38 }
@@ -318,15 +306,13 @@ final class HUDModel: ObservableObject {
     @Published var level: Float = 0
     @Published var message: String? = nil
 
-    // Live dictation preview: the in-progress sentence shown in the pill while
-    // the user speaks (smart-typing only). `showsPreview` reserves the pill's
-    // width; `previewText` is the text, head-truncated.
+    // The in-progress sentence shown while the user speaks (smart-typing only).
+    // `showsPreview` reserves the pill's width; `previewText` is the text.
     @Published var previewText: String = ""
     @Published var showsPreview: Bool = false
 
-    // Single source of truth for what the pill renders, shared by HUDView
-    // (drawing) and RecordingHUD.measurePillSize() (panel sizing) so the two
-    // can never disagree about width.
+    // Single source of truth for what the pill renders, shared by HUDView (drawing)
+    // and measurePillSize() (sizing) so the two can't disagree about width.
     var isMessage: Bool { message != nil }
 
     var displayLabel: String {
@@ -399,9 +385,6 @@ private struct HUDView: View {
             }
 
             if model.showsPreview {
-                // Live dictation preview: show the in-progress sentence, head-
-                // truncated in a fixed width, falling back to the status label
-                // until the first words arrive.
                 Text(model.previewText.isEmpty ? model.displayLabel : model.previewText)
                     .font(.system(size: 13, weight: .medium))
                     .monospacedDigit()
@@ -418,9 +401,8 @@ private struct HUDView: View {
                     .modifier(HUDLabelSizing(isMessage: model.message != nil))
             }
 
-            // Live waveform trails the label while the mic is open, so the
-            // pill still shows it's actively listening. The leading mic /
-            // wand icon stays put; this only adds motion after the text.
+            // Live waveform trails the label while the mic is open, so the pill
+            // still shows it's actively listening.
             if model.showsWaveform {
                 Waveform(level: model.level)
                     .frame(width: 38, height: 24)
@@ -436,10 +418,9 @@ private struct HUDView: View {
 
 }
 
-// Five-bar waveform that pulses with the perceptual level (a
-// dB-windowed, crest-gated RMS from RecordingHUD's meter). The bars are lazy-driven by
-// `level` so we don't have to spin a CADisplayLink - SwiftUI re-renders whenever
-// `model.level` changes.
+// Five-bar waveform that pulses with the perceptual level (a dB-windowed,
+// crest-gated RMS from RecordingHUD's meter). Driven by `level` rather than a
+// CADisplayLink - SwiftUI re-renders whenever `model.level` changes.
 private struct Waveform: View {
     let level: Float
 
@@ -458,17 +439,16 @@ private struct Waveform: View {
         // Bias inner bars taller so the shape looks like a waveform rather than a row of identical sticks.
         let bias: [CGFloat] = [0.45, 0.7, 1.0, 0.7, 0.45]
         let base: CGFloat = 6
-        // `level` is already a perceptual 0...1 value (RecordingHUD.meterLevel);
-        // a small floor keeps a faint idle pulse.
+        // A small floor keeps a faint idle pulse.
         let amplitude = CGFloat(min(1.0, max(0.04, Double(level)))) * 18
         return base + amplitude * bias[i]
     }
 }
 
-// Status labels (Listening, Meeting · 1:23:45, …) stay on one line and let the
-// pill size to their natural width. Error messages can be a full sentence, so
-// they wrap inside a capped width and grow the pill vertically instead of
-// running off-screen - the panel height tracks this via resizeToFitContent().
+// Status labels (Listening, Meeting · 1:23:45, …) stay on one line at their
+// natural width. Error messages can be a full sentence, so they wrap inside a
+// capped width and grow the pill vertically instead of running off-screen -
+// the panel height tracks this via resizeToFitContent().
 private struct HUDLabelSizing: ViewModifier {
     let isMessage: Bool
 

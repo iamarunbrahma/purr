@@ -2,38 +2,30 @@ import Foundation
 import WhisperKit
 import os.log
 
-// Owns model files on disk. WhisperKit can download to its own cache, but we
-// route everything through ~/Library/Application Support/Purr/models so:
-//   - the user can find and delete models without spelunking ~/Library/Caches
-//   - the location survives `defaults delete` and Xcode-cache cleaning
-//   - a future "import model from file" flow has a documented home for them.
+// Owns model files on disk. WhisperKit can download to its own cache, but we route
+// everything through ~/Library/Application Support/Purr/models so users can find and
+// delete models without spelunking ~/Library/Caches, and so the location survives
+// `defaults delete` and Xcode-cache cleaning.
 enum ModelManager {
-    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "models")
+    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "models")
 
-    // Whisper Large V3 Turbo: 4 decoder layers (vs 32 in Large V3),
-    // ~6× decode speed. The `_632MB` suffix selects argmax's quantised
-    // CoreML build - fits in memory and runs on the ANE on every supported
-    // Mac. The un-suffixed variant on the same repo is full-precision and
-    // ~1.5 GB on disk; we deliberately do not surface it.
+    // Whisper Large V3 Turbo: 4 decoder layers (vs 32 in Large V3), ~6× decode
+    // speed. The `_632MB` suffix selects argmax's quantised CoreML build, which fits
+    // in memory and runs on the ANE on every supported Mac; the un-suffixed variant
+    // is full-precision and ~1.5 GB, so we deliberately don't surface it.
     static let defaultModel = "openai_whisper-large-v3-v20240930_turbo_632MB"
     static let modelRepo = "argmaxinc/whisperkit-coreml"
 
-    // Curated list shown in Settings. WhisperKit's repo has dozens of
-    // variants; surfacing all of them is overwhelming. These are the ones
-    // worth picking between for dictation.
+    // Curated list shown in Settings: WhisperKit's repo has dozens of variants, and
+    // these are the ones worth picking between for dictation.
     //
-    // sizeMB values match the total bytes downloaded from
-    // argmaxinc/whisperkit-coreml for each variant (sum of all files in
-    // the variant directory, including .mlmodelc weights and, where the
-    // repo also ships .mlpackage duplicates, those too). Keep in sync with
-    // the repo on Hugging Face.
+    // sizeMB is the total downloaded from argmaxinc/whisperkit-coreml for each
+    // variant (every file in the variant directory, including .mlmodelc weights and
+    // any .mlpackage duplicates). Keep in sync with the repo on Hugging Face.
     //
-    // `supportsTranslation` is the single capability flag the rest of the
-    // app reads. English-only (.en) builds and Turbo both fail it - they
-    // can't translate to English. Only Base, Small, and Large V3 are true.
-    // Notes lead with "Multilingual." or "English only." - except Turbo,
-    // where that prefix misleads (users assume translation works), so its
-    // note instead emphasises the real strength: quality at real-time speed.
+    // Notes lead with "Multilingual." or "English only." - except Turbo, where that
+    // prefix misleads users into assuming translation works, so its note emphasises
+    // quality at real-time speed instead.
     static let curatedModels: [ModelChoice] = [
         ModelChoice(
             id: "openai_whisper-tiny.en",
@@ -79,9 +71,8 @@ enum ModelManager {
         ),
     ]
 
-    // Whether the Translate-to-English task is meaningful for this model.
-    // Unknown / uncurated names default to false so the engine never asks
-    // a model to do something it can't.
+    // Unknown / uncurated names default to false so the engine never asks a model
+    // to translate when it can't.
     static func supportsTranslation(_ modelName: String) -> Bool {
         curatedModels.first { $0.id == modelName }?.supportsTranslation ?? false
     }
@@ -102,12 +93,11 @@ enum ModelManager {
         {
             return local
         }
-        // Files missing. We deliberately don't auto-pull here - the warmup
-        // path would race with the Settings UI's explicit download (both
-        // converge on `download` and clobber each other on `copyItem`),
-        // and a silent ~450 MB background fetch with no progress UI is
-        // worse UX than a clear "open Settings → Engine to install".
-        // EngineError.modelDirectoryMissing surfaces the latter on the next transcribe.
+        // Files missing, and we deliberately don't auto-pull: the warmup path would
+        // race the Settings UI's explicit download (both converge on `download` and
+        // clobber each other on `copyItem`), and a silent ~450 MB fetch with no
+        // progress UI is worse than the "install from Settings → Engine" prompt
+        // that modelDirectoryMissing surfaces on the next transcribe.
         throw EngineError.modelDirectoryMissing
     }
 
@@ -122,9 +112,8 @@ enum ModelManager {
     @discardableResult
     static func download(modelName: String, progress: @escaping (Double) -> Void) async throws -> URL {
         log.info("Downloading model \(modelName, privacy: .public) from \(modelRepo, privacy: .public)")
-        // WhisperKit caches under its own root; we copy/symlink the result
-        // into our Application Support tree so it lives where the rest of
-        // the app expects it.
+        // WhisperKit caches under its own root; copy the result into our Application
+        // Support tree so it lives where the rest of the app expects it.
         let cached = try await WhisperKit.download(
             variant: modelName,
             from: modelRepo
@@ -147,12 +136,10 @@ enum ModelManager {
         }
     }
 
-    // Removes every downloaded model in one sweep: Whisper checkpoints, the
-    // Gemma GGUF, and the FluidAudio CoreML bundles (Parakeet batch + EOU and
-    // the diarizer) - all of which now live under this one folder. Meeting
-    // transcripts live in a sibling folder and are deliberately left alone.
-    // Callers MUST release any in-memory model sessions first so a deleted
-    // file isn't left mmap'd behind a live handle.
+    // Removes every downloaded model in one sweep: Whisper checkpoints, the Gemma
+    // GGUF, and the FluidAudio CoreML bundles. Meeting transcripts live in a sibling
+    // folder and are deliberately left alone. Callers MUST release any in-memory
+    // model sessions first so a deleted file isn't left mmap'd behind a live handle.
     static func deleteAllModels() throws {
         let dir = modelsDirectory
         if FileManager.default.fileExists(atPath: dir.path) {
@@ -166,11 +153,10 @@ struct ModelChoice: Identifiable, Hashable {
     let label: String
     let sizeMB: Int
     let note: String
-    // True only for checkpoints that can actually run Whisper's X->English
-    // translate task. English-only (.en) builds can't read non-English at
-    // all; Turbo (large-v3-turbo) is multilingual for transcription but was
-    // fine-tuned without translation data. Both end up false here. Only
-    // Base, Small, and Large V3 are true. Gates the Translate toggle's
-    // enabled state in Settings AND WhisperEngine's runtime task choice.
+    // True only for checkpoints that can run Whisper's X->English translate task, so
+    // only Base, Small, and Large V3: English-only (.en) builds can't read
+    // non-English at all, and Turbo is multilingual for transcription but was
+    // fine-tuned without translation data. Gates the Translate toggle in Settings
+    // and WhisperEngine's runtime task choice.
     let supportsTranslation: Bool
 }

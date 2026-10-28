@@ -1,10 +1,8 @@
 import AppKit
 import SwiftUI
 
-// AppDelegate owns long-lived singletons. It does no work itself - the
-// pipeline lives in AppCoordinator, the menu bar in MenuBarController, and
-// settings in SettingsStore. Keeping this thin makes it easy to find where
-// any given behaviour actually lives.
+// Owns long-lived singletons and does no work itself - the pipeline lives in
+// AppCoordinator, the menu bar in MenuBarController, settings in SettingsStore.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: AppCoordinator!
     private var menuBar: MenuBarController!
@@ -23,9 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onQuit: { NSApp.terminate(nil) }
         )
 
-        // Wire the global Quit hotkey (⌃⌥Q) through the same closure the
-        // status-bar Quit item uses, so a hotkey press and a menu click are
-        // indistinguishable downstream.
+        // The global Quit hotkey (⌃⌥Q) shares the status-bar item's closure, so
+        // a hotkey press and a menu click are indistinguishable downstream.
         coordinator.setMenuActions(
             quit: { NSApp.terminate(nil) }
         )
@@ -33,10 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.start()
 
         if !SettingsStore.shared.onboardingDone || !Permissions.allGranted() {
-            // First launch, or a regression from a permission being revoked
-            // (System Settings can flip these any time): walk the user
-            // through the three TCC prompts before they try to use a hotkey
-            // that won't fire.
+            // First launch, or a permission was revoked in System Settings:
+            // walk the user through the TCC prompts before they reach for a
+            // hotkey that won't fire.
             showOnboarding()
         }
     }
@@ -47,18 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        // textSelection lets the user drag-select and copy any text in the
-        // window (permission descriptions, shortcuts) out to other apps.
-        // "Start Using Purr" closes this window; the app stays alive in the
-        // menu bar (isReleasedWhenClosed is false, so it can be reopened from
-        // the menu). The window isn't assigned to onboardingWindow until below,
-        // so capture self and read it lazily when the button fires.
+        // onboardingWindow isn't assigned until below, so capture self and read
+        // it lazily when the button fires.
         let view = OnboardingView(onFinish: { [weak self] in self?.onboardingWindow?.close() })
             .textSelection(.enabled)
         let host = NSHostingController(rootView: view)
-        // Size the window to the SwiftUI content's ideal size. OnboardingView
-        // pins its own width, so this yields a window sized exactly to the
-        // content - no clipping, no empty padding.
+        // OnboardingView pins its own width, so the ideal content size yields a
+        // window sized exactly to the content - no clipping, no empty padding.
         host.sizingOptions = .preferredContentSize
         let win = NSWindow(contentViewController: host)
         win.title = "Welcome to Purr"

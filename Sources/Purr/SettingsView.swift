@@ -5,20 +5,18 @@ struct SettingsView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @StateObject private var modelVM = ModelPickerViewModel()
     @StateObject private var diarizerVM: FluidModelViewModel
-    // EOU install state drives both the Smart Typing toggle's enabled gate and
-    // the EOU card. The card downloads/deletes via the coordinator (so warm-up
-    // and the button share one progress source) and writes the result back here.
+    // Gates the Smart Typing toggle and drives the EOU card.
     @State private var eouInstalled = ParakeetEngine.eouIsInstalled()
+    @State private var meetingLanguageModelInstalled = ParakeetEngine.meetingModelIsInstalled()
     // Shares the one Gemma model with the meeting summary section.
     @StateObject private var voiceEditLLM = LLMSummaryViewModel()
     @State private var showResetConfirmation = false
     @State private var showLanguagePicker = false
+    @State private var showMeetingLanguagePicker = false
     @State private var showDeleteModelsConfirmation = false
     @State private var isDeletingModels = false
     @State private var deleteModelsError: String?
     @State private var deleteErrorToken = 0
-    // Observed so the Delete Models gate reacts live to Parakeet / EOU download
-    // progress, which are @Published on the coordinator.
     @ObservedObject var coordinator: AppCoordinator
 
     init(coordinator: AppCoordinator) {
@@ -91,9 +89,8 @@ struct SettingsView: View {
                             + "Off: copy transcript to clipboard so you can ⌘V it."
                     )
                     .onChange(of: settings.autoPaste) { _, isOn in
-                        // Smart Typing inserts live at the cursor, so it's a
-                        // form of auto-insertion - it can't run while auto-paste
-                        // is off. Force it off so it never sits on-but-inert.
+                        // Smart Typing is a form of auto-insertion - force it
+                        // off too, rather than leaving it on-but-inert.
                         if !isOn { settings.smartTyping = false }
                     }
             }
@@ -164,15 +161,13 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 .onChange(of: settings.engine) { _, newValue in
-                    // Whisper has no streaming engine; clear the toggle so
-                    // it doesn't stay "on" with no effect. Switching back
-                    // to Parakeet doesn't re-enable it - explicit opt-in.
+                    // Whisper has no streaming engine; clear the toggle rather
+                    // than leave it "on" with no effect. Not re-enabled on
+                    // switching back - explicit opt-in.
                     if newValue == .whisper {
                         settings.smartTyping = false
-                        // If the persisted Whisper model can't translate
-                        // (Turbo or any English-only build), force Translate
-                        // off so the toggle isn't stuck on against a row
-                        // that disables it.
+                        // Force off if the model can't translate, so the
+                        // toggle isn't stuck on against a disabled row.
                         if !ModelManager.supportsTranslation(settings.modelName) {
                             settings.translateToEnglish = false
                         }
@@ -196,17 +191,12 @@ struct SettingsView: View {
                             errorMessage: modelVM.errors[choice.id],
                             onSelect: {
                                 settings.modelName = choice.id
-                                // Picking a model that can't translate
-                                // (English-only or Turbo) forces the toggle
-                                // off so it can't sit stale-on against a
-                                // disabled control.
                                 if !choice.supportsTranslation {
                                     settings.translateToEnglish = false
                                 }
                                 coordinator.reloadEngine()
-                                // Auto-download when the user picks a model
-                                // that isn't on disk. The engine reload above
-                                // will fail-soft until the weights land.
+                                // Auto-download if not on disk; the reload
+                                // above fails-soft until the weights land.
                                 if !modelVM.installed.contains(choice.id),
                                     modelVM.progress[choice.id] == nil
                                 {
@@ -282,12 +272,24 @@ struct SettingsView: View {
                     .help(
                         "Show the floating \u{201C}Meeting \u{00B7} 0:00\u{201D} pill with a live waveform while a meeting records. When off, the menu bar still shows a recording indicator."
                     )
+                Toggle("Save meeting audio", isOn: $settings.saveMeetingAudio)
+                    .disabled(!settings.meetingEnabled)
+                Text(
+                    "Saves a compressed recording (.m4a) next to each meeting's transcript in your meetings folder, so a weak transcript can be re-verified or re-transcribed later. Off by default - audio is larger and more sensitive than text."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 fluidModelCard(
                     name: "Diarization",
                     size: "~21 MB",
                     note: "Meeting speaker attribution. Records who said what.",
                     vm: diarizerVM
                 )
+                meetingLanguageField
+                if !settings.meetingLanguage.isEmpty {
+                    MeetingLanguageModelCard(
+                        coordinator: coordinator, isInstalled: $meetingLanguageModelInstalled)
+                }
                 Text(
                     "Tap the hotkey to toggle meeting recording. Saves the transcript as markdown to the meetings folder you picked during setup (default: ~/Library/Application Support/Purr/Purr Meetings/)."
                 )
@@ -365,11 +367,8 @@ struct SettingsView: View {
         }
     }
 
-    // Voice editing requires an LLM backend. When Apple's built-in model is
-    // the backend nothing is shown; otherwise this shows the downloaded Gemma
-    // model, or - when no backend is set up - a note pointing to the meeting
-    // summary section, which downloads the same Gemma weights. We don't offer a
-    // second Download button here so two sections can't race on the one file.
+    // No second Download button here - the meeting summary section owns the
+    // one Gemma download, so two sections can't race on the same file.
     @ViewBuilder
     private var voiceEditModelStatus: some View {
         if voiceEditLLM.appleFoundationAvailable {
@@ -390,9 +389,6 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                // Points to the meeting summary section instead of a second
-                // Download button: it's the same Gemma file, and that section
-                // already owns the download (progress, retry, license notice).
                 Text(
                     "It uses the same \(LLMModelManager.defaultModelLabel) model as Auto-Summarize Meetings above."
                 )
@@ -514,8 +510,6 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
                 if isDeletingModels {
-                    // The button is replaced by an in-progress indicator while
-                    // the delete runs, rather than a disabled button + spinner.
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Deleting…").foregroundStyle(.secondary)
@@ -556,12 +550,12 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    // True while any model is downloading - Parakeet TDT v2, EOU, a Whisper
-    // checkpoint, the diarizer, or Gemma. Gates the Delete Models button so a
-    // wipe can't pull weights out from under an in-flight download.
+    // Gates the Delete Models button so a wipe can't pull weights out from
+    // under an in-flight download.
     private var anyModelDownloading: Bool {
         coordinator.parakeetBatchProgress != nil
             || coordinator.eouDownloadProgress != nil
+            || coordinator.meetingLanguageModelProgress != nil
             || !modelVM.progress.isEmpty
             || diarizerVM.isDownloading
             || voiceEditLLM.progress != nil
@@ -577,6 +571,7 @@ struct SettingsView: View {
             case .ok:
                 modelVM.refreshInstalled()
                 eouInstalled = ParakeetEngine.eouIsInstalled()
+                meetingLanguageModelInstalled = ParakeetEngine.meetingModelIsInstalled()
                 diarizerVM.refresh()
                 voiceEditLLM.refresh()
             case .busy:
@@ -589,8 +584,7 @@ struct SettingsView: View {
         }
     }
 
-    // Shows a Delete Models notice that clears itself after a few seconds so a
-    // transient "busy" message doesn't linger after the condition has cleared.
+    // Clears itself after a few seconds so a "busy" message doesn't linger.
     private func showTransientDeleteError(_ message: String) {
         deleteModelsError = message
         deleteErrorToken += 1
@@ -611,9 +605,8 @@ struct SettingsView: View {
                     Text(name).font(.body.weight(.medium))
                     Text(size).foregroundStyle(.secondary).font(.caption)
                     if vm.isDownloading {
-                        // The bar below shows progress; we don't print a numeric
-                        // percent - a multi-file download's fraction jumps around
-                        // and reads as misleading.
+                        // No numeric percent - a multi-file download's fraction
+                        // jumps around and would read as misleading.
                         Text("downloading…").foregroundStyle(.secondary).font(.caption2)
                     } else if !vm.isInstalled, vm.error == nil {
                         Text("not yet downloaded").foregroundStyle(.secondary).font(.caption2)
@@ -667,16 +660,12 @@ struct SettingsView: View {
         settings.engine == .parakeet
     }
 
-    // The Translate toggle is meaningful only on a multilingual, non-turbo
-    // Whisper model. Mirrors WhisperEngine's runtime gate so the UI never
-    // offers an option the engine would ignore. Drives the toggle's
-    // enabled state and the Source Language picker's visibility.
+    // Mirrors WhisperEngine's runtime gate so the UI never offers an option
+    // the engine would ignore.
     private var selectedModelSupportsTranslation: Bool {
         ModelManager.supportsTranslation(settings.modelName)
     }
 
-    // Compact row that opens a modal sheet owning the search and full
-    // 100-language list.
     @ViewBuilder
     private var sourceLanguageField: some View {
         let selected = WhisperLanguage.named(settings.translationSourceLanguage)
@@ -697,7 +686,10 @@ struct SettingsView: View {
         .buttonStyle(.plain)
         .sheet(isPresented: $showLanguagePicker) {
             LanguagePickerSheet(
+                title: "Source Language",
                 selection: $settings.translationSourceLanguage,
+                allLanguages: WhisperLanguage.all,
+                matching: WhisperLanguage.matching,
                 onClose: { showLanguagePicker = false }
             )
         }
@@ -706,6 +698,43 @@ struct SettingsView: View {
             settings.translationSourceLanguage.isEmpty
                 ? "Auto-detect can misread very short clips. Select a language for reliable short-phrase translation."
                 : "Detection is skipped. Whisper assumes the audio is \(selected.name)."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var meetingLanguageField: some View {
+        let selected = ParakeetLanguage.named(settings.meetingLanguage)
+
+        Button {
+            showMeetingLanguagePicker = true
+        } label: {
+            HStack {
+                Text("Meeting Language")
+                Spacer()
+                Text(selected.name).foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showMeetingLanguagePicker) {
+            LanguagePickerSheet(
+                title: "Meeting Language",
+                selection: $settings.meetingLanguage,
+                allLanguages: ParakeetLanguage.all,
+                matching: ParakeetLanguage.matching,
+                onClose: { showMeetingLanguagePicker = false }
+            )
+        }
+
+        Text(
+            settings.meetingLanguage.isEmpty
+                ? "Meetings transcribe with the English Parakeet model."
+                : "Meetings transcribe with the multilingual Parakeet model, hinted for \(selected.name)."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -771,11 +800,9 @@ final class FluidModelViewModel: ObservableObject {
 }
 
 // ----------------------------------------------------------------------
-// Parakeet engine card - Engine tab. Unlike the EOU / diarizer cards (which
-// only download on an explicit tap), Parakeet TDT v2 also auto-downloads
-// during warm-up, so its progress comes from the coordinator's shared download
-// state rather than a per-button view model. That's what lets an auto-download
-// show a live progress bar here, not just a manual Download tap.
+// Parakeet engine card - Engine tab. v2 also auto-downloads during warmup
+// (unlike EOU/diarizer, tap-only), so progress comes from the coordinator's
+// shared state rather than a per-button view model.
 // ----------------------------------------------------------------------
 
 private struct ParakeetEngineCard: View {
@@ -830,8 +857,6 @@ private struct ParakeetEngineCard: View {
         .padding(.vertical, 4)
         .onAppear { isInstalled = ParakeetEngine.batchIsInstalled() }
         .onChange(of: coordinator.parakeetBatchProgress) { _, newValue in
-            // A download just finished (or was cleared); re-check disk so the
-            // card flips to Delete / Download correctly.
             if newValue == nil { isInstalled = ParakeetEngine.batchIsInstalled() }
         }
     }
@@ -857,12 +882,9 @@ private struct ParakeetEngineCard: View {
 }
 
 // ----------------------------------------------------------------------
-// Parakeet EOU 120M card - Smart Typing section (General tab). Like the
-// Parakeet engine card, the EOU model auto-downloads during warm-up (gated on
-// Smart Typing being on), so its progress comes from the coordinator's shared
-// download state - that's what shows a bar for an auto-download, not just a
-// manual Download tap. `isInstalled` is bound to the parent so the Smart Typing
-// toggle's enabled gate tracks the same state.
+// Parakeet EOU 120M card - Smart Typing section. Also auto-downloads during
+// warmup (gated on Smart Typing). `isInstalled` binds to the parent so the
+// Smart Typing toggle's enabled gate tracks the same state.
 // ----------------------------------------------------------------------
 
 private struct EOUCard: View {
@@ -942,6 +964,91 @@ private struct EOUCard: View {
 }
 
 // ----------------------------------------------------------------------
+// Parakeet v3 (multilingual meeting) card - Features tab. Mirrors EOUCard's
+// real fractional progress, since this model can also be triggered two ways:
+// the Download button here, or a meeting hitting the language for the
+// first time.
+// ----------------------------------------------------------------------
+
+private struct MeetingLanguageModelCard: View {
+    @ObservedObject var coordinator: AppCoordinator
+    @Binding var isInstalled: Bool
+    @State private var error: String?
+
+    var body: some View {
+        let progress = coordinator.meetingLanguageModelProgress
+        let downloading = progress != nil
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("Parakeet TDT v3 (multilingual)").font(.body.weight(.medium))
+                    Text("~450 MB").foregroundStyle(.secondary).font(.caption)
+                    if downloading {
+                        Text("downloading…").foregroundStyle(.secondary).font(.caption2)
+                    } else if !isInstalled, error == nil {
+                        Text("not yet downloaded").foregroundStyle(.secondary).font(.caption2)
+                    }
+                }
+                Text(
+                    "Needed for non-English meeting transcription. Downloads automatically on your next meeting if you skip this."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if let progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .padding(.top, 2)
+                }
+                if let error {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(error).foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                    .padding(.top, 2)
+                }
+            }
+            Spacer()
+            if downloading {
+                // No trailing spinner - the progress bar already conveys state.
+            } else if isInstalled {
+                Button("Delete", role: .destructive) { delete() }
+                    .controlSize(.small)
+            } else {
+                Button("Download") { download() }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear { isInstalled = ParakeetEngine.meetingModelIsInstalled() }
+        .onChange(of: coordinator.meetingLanguageModelProgress) { _, newValue in
+            if newValue == nil { isInstalled = ParakeetEngine.meetingModelIsInstalled() }
+        }
+    }
+
+    private func download() {
+        error = nil
+        Task {
+            if case .failed(let err) = await coordinator.downloadMeetingLanguageModel() {
+                error = err.localizedDescription
+            }
+            isInstalled = ParakeetEngine.meetingModelIsInstalled()
+        }
+    }
+
+    private func delete() {
+        error = nil
+        switch coordinator.deleteMeetingLanguageModel() {
+        case .ok: isInstalled = false
+        case .busy: error = "Finish the current meeting, then try again."
+        case .failed(let err): error = err.localizedDescription
+        }
+    }
+}
+
+// ----------------------------------------------------------------------
 // Whisper model row - only shown on the Engine tab when Whisper is active
 // ----------------------------------------------------------------------
 
@@ -996,17 +1103,13 @@ private struct ModelRow: View {
                 Button("Delete", role: .destructive, action: onDelete)
                     .controlSize(.small)
             } else if !isInstalled, progress == nil {
-                // Explicit fetch, separate from the row-tap that also selects.
-                // Lets users pre-download a model without switching to it, and
-                // recover when an auto-download didn't kick off.
+                // Lets users pre-download without switching to it.
                 Button("Download", action: onDownload).controlSize(.small)
             }
         }
         .padding(.vertical, 4)
-        // The whole row is one tap target for selection. Clicking on a
-        // not-yet-downloaded model selects it AND kicks off the download.
-        // Disabled while a download is already in flight to avoid double
-        // taps queueing two HF pulls.
+        // Whole row is one tap target: selects and downloads together.
+        // Ignored mid-download to avoid queueing two pulls.
         .contentShape(Rectangle())
         .onTapGesture {
             if progress != nil { return }
@@ -1019,10 +1122,7 @@ private struct ModelRow: View {
 final class ModelPickerViewModel: ObservableObject {
     @Published var installed: Set<String> = []
     @Published var progress: [String: Double] = [:]
-    // Per-model failure state. Inline on the row instead of a modal alert
-    // so the user can compare options, switch models, or retry without
-    // dismissing a system dialog. Cleared on a successful retry; persists
-    // across tab switches.
+    // Inline on the row (not a modal alert) so options stay comparable.
     @Published var errors: [String: String] = [:]
 
     func refreshInstalled() {
@@ -1056,9 +1156,7 @@ final class ModelPickerViewModel: ObservableObject {
     }
 }
 
-// Map raw URLSession / POSIX errors to short, actionable copy.
-// Anything we don't recognise falls through to the system-provided
-// localizedDescription so we never swallow a useful message.
+// Unrecognized errors fall through to localizedDescription.
 private func friendlyDownloadError(_ error: Error) -> String {
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain {
@@ -1084,17 +1182,15 @@ private func friendlyDownloadError(_ error: Error) -> String {
 }
 
 // ----------------------------------------------------------------------
-// Meeting summary section - LLM picker + auto-summarize toggle. Lives
-// on the Features tab. The Gemma model is downloaded lazily on first
-// real meeting summarization, but exposing a Download button here lets
-// users pre-fetch the ~2.5 GB weights at a convenient time.
+// Meeting summary section - LLM picker + auto-summarize toggle, Features tab.
+// A Download button here lets users pre-fetch the ~2.5GB Gemma weights
+// instead of waiting for the first real summarization.
 // ----------------------------------------------------------------------
 
 private struct MeetingSummarySection: View {
     @ObservedObject private var settings = SettingsStore.shared
-    // Shared with SettingsView's voiceEditLLM (the one Gemma VM) so this
-    // section's download progress is the same instance the Delete Models gate
-    // (anyModelDownloading) observes - otherwise a wipe could fire mid-download.
+    // Shared with SettingsView's voiceEditLLM (one Gemma VM) so the Delete
+    // Models gate observes the same download instance - not a second one.
     @ObservedObject var vm: LLMSummaryViewModel
 
     var body: some View {
@@ -1107,9 +1203,8 @@ private struct MeetingSummarySection: View {
         )
         .disabled(!vm.canSummarize)
         .help(toggleHelp)
-        // Re-read the model's on-disk state whenever this section appears, so
-        // the Gemma row reflects reality after a download or a Delete Models
-        // wipe (which lives on a different tab). The other cards already do this.
+        // Re-read on-disk state so the row reflects a Delete Models wipe
+        // on another tab.
         .onAppear { vm.refresh() }
 
         Text("Writes a sidecar `.summary.md` with TL;DR, decisions, and action items. On-device.")
@@ -1123,8 +1218,7 @@ private struct MeetingSummarySection: View {
         }
         gemmaCard
 
-        // Gemma flow-down notice. Required by the Gemma Terms of Use
-        // when exposing the model's functionality through a UI.
+        // Required by the Gemma Terms of Use when exposing it through a UI.
         Label {
             (Text("Gemma 3 is provided under the ")
                 + Text(LLMModelManager.licenseName).underline()
@@ -1147,27 +1241,17 @@ private struct MeetingSummarySection: View {
         return "Download a model below or upgrade to macOS 26."
     }
 
-    // True when Apple FM is the active backend in the UI. On macOS < 26
-    // it can't be selected at all; on macOS 26+ it's the default and
-    // only gets unselected when the user explicitly picks Gemma.
     private var appleSelected: Bool {
         vm.appleFoundationAvailable && settings.summaryBackend == .appleFoundation
     }
 
-    // True when Gemma is the active backend in the UI. Gemma is only
-    // "active" when actually installed - selecting it without weights
-    // on disk is a no-op (the row triggers a download instead).
+    // "Active" only once actually installed - selecting Gemma before that
+    // triggers a download instead of changing the backend.
     private var gemmaSelected: Bool {
-        if !vm.appleFoundationAvailable {
-            // No Apple FM on this system; Gemma is the only option,
-            // and visibly "selected" once it's downloaded.
-            return vm.isInstalled
-        }
+        if !vm.appleFoundationAvailable { return vm.isInstalled }
         return settings.summaryBackend == .llamaCpp && vm.isInstalled
     }
 
-    // macOS 26+ path: Apple Intelligence is on, no download needed.
-    // Tap to make it the active backend.
     private var appleFoundationCard: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: appleSelected ? "largecircle.fill.circle" : "circle")
@@ -1189,10 +1273,6 @@ private struct MeetingSummarySection: View {
         .onTapGesture { settings.summaryBackend = .appleFoundation }
     }
 
-    // Shown in place of the Apple FM card when the system can't reach it
-    // (pre-Tahoe macOS, Apple Intelligence off, unsupported locale, or an
-    // ineligible Mac). Surfaces every requirement and a one-tap deep link
-    // into the right System Settings pane so users don't have to hunt.
     private var appleFoundationUnavailableNote: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "info.circle")
@@ -1211,10 +1291,8 @@ private struct MeetingSummarySection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 Button("Open Settings") {
-                    // Opens macOS 26 Tahoe's "Apple Intelligence & Siri" pane.
-                    // The legacy com.apple.preference.assistant id now lands on
-                    // General instead, so we use the Settings-extension bundle
-                    // id that targets the right pane on Tahoe.
+                    // The legacy com.apple.preference.assistant id now lands
+                    // on General; this targets Tahoe's Apple Intelligence & Siri pane.
                     if let url = URL(
                         string: "x-apple.systempreferences:com.apple.Siri-Settings.extension")
                     {
@@ -1229,10 +1307,8 @@ private struct MeetingSummarySection: View {
         .padding(.vertical, 4)
     }
 
-    // Gemma 3 4B (Q4_K_M GGUF, llama.cpp). Selectable only after the
-    // weights are on disk; tapping the row before that triggers a
-    // download instead of changing the active backend, so we never
-    // silently no-op on the next meeting.
+    // Selectable only once weights are on disk; tapping before that
+    // downloads instead of changing the backend.
     private var gemmaCard: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: gemmaSelected ? "largecircle.fill.circle" : "circle")
@@ -1274,18 +1350,11 @@ private struct MeetingSummarySection: View {
                 Button("Retry") { vm.download() }
                     .controlSize(.small)
             } else if vm.isInstalled {
-                // Always offer Delete when weights are on disk -
-                // including when Gemma is the active backend - so the
-                // user can reclaim the ~2.5 GB without first switching
-                // to Apple FM (or, on systems where Apple FM is
-                // unavailable, ever). vm.delete() does the right thing
-                // with the summarize toggle and backend preference.
+                // Offered even when Gemma is active - reclaims the ~2.5GB
+                // without switching backend first; vm.delete() handles that.
                 Button("Delete", role: .destructive) { vm.delete() }
                     .controlSize(.small)
             } else if vm.progress == nil {
-                // Explicit fetch affordance, like the Whisper/Parakeet rows -
-                // clearer than relying on the row tap when nothing has
-                // auto-downloaded.
                 Button("Download") { vm.download() }
                     .controlSize(.small)
                     .buttonStyle(.borderedProminent)
@@ -1309,20 +1378,13 @@ final class LLMSummaryViewModel: ObservableObject {
     @Published var isInstalled: Bool = false
     @Published var appleFoundationAvailable: Bool = false
     @Published var progress: Double? = nil
-    // Last download failure, surfaced inline on the Gemma row instead
-    // of as a modal alert. Cleared on the next retry; persists across
-    // tab switches so the user can compare backends without losing the
-    // error context.
+    // Inline on the Gemma row, not a modal alert.
     @Published var error: String? = nil
 
-    // True when at least one backend is ready right now: Apple
-    // Foundation Model on macOS 26+ with AI on, or Gemma weights cached
-    // on disk.
     var canSummarize: Bool { appleFoundationAvailable || isInstalled }
 
-    // Shared with AppCoordinator so a download here warms the same
-    // session that a meeting will use a moment later, and a delete here
-    // releases that session without a stale copy lingering elsewhere.
+    // Shared with AppCoordinator so a download/delete here reuses the same
+    // session a meeting would, instead of a stale copy lingering elsewhere.
     private let summarizer = MeetingSummarizer.shared
 
     init() {
@@ -1338,11 +1400,8 @@ final class LLMSummaryViewModel: ObservableObject {
         }
     }
 
-    // Pulls the GGUF into ~/Library/Application Support/Purr/models/
-    // with progress reporting. We deliberately don't pre-load the
-    // LlamaSession after download - that happens lazily on first
-    // summarize so the user doesn't wait through a model-init delay in
-    // Settings.
+    // Doesn't pre-load the LlamaSession after download - that happens
+    // lazily on first summarize, so Settings doesn't wait through model-init.
     func download() {
         error = nil
         progress = 0
@@ -1361,7 +1420,7 @@ final class LLMSummaryViewModel: ObservableObject {
     }
 
     func delete() {
-        let log = Logger(subsystem: "com.arunbrahma.purr", category: "summarizer")
+        let log = Logger(subsystem: "com.arunbrahma.hello", category: "summarizer")
         log.info("Gemma delete: starting.")
 
         let appleFallbackUsable: Bool
@@ -1373,10 +1432,8 @@ final class LLMSummaryViewModel: ObservableObject {
         log.info("Gemma delete: Apple FM fallback usable = \(appleFallbackUsable, privacy: .public)")
 
         Task { @MainActor in
-            // Release the in-memory LlamaSession FIRST. If we removed the
-            // on-disk weights but left the session cached, the next
-            // generation would reuse a session pointing at deleted files -
-            // and we'd also leak ~2.5 GB of unified memory.
+            // Unload first - a cached session pointing at deleted weights
+            // would be reused by the next generation, and leak ~2.5GB.
             await summarizer.unload()
             log.info("Gemma delete: in-memory unload complete; about to remove on-disk weights.")
 

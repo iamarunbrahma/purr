@@ -6,24 +6,21 @@ import FoundationModels
 #endif
 
 // Interprets a spoken instruction against a selected passage and returns the
-// edited text. Any phrasing works because an on-device LLM does the
-// interpreting.
+// edited text, with an on-device LLM doing the interpreting.
 //
-// Surgical by construction. The model never emits the edited passage directly
-// for a targeted edit - it names find/replace spans and `applyPlan` performs
-// the substitution in Swift, so untouched text cannot change. A whole-passage
-// rewrite ("make this concise") is the one case the model returns full text.
+// Surgical by construction: for a targeted edit the model names find/replace
+// spans and `applyPlan` performs the substitution in Swift, so untouched text
+// cannot change. A whole-passage rewrite ("make this concise") is the one case
+// the model returns full text.
 //
 // Both backends are asked for the same fenced text protocol; `parsePlan`
-// decodes it. Voice Edit requires an LLM backend.
-// Apple Foundation Models (macOS 26+) is preferred; Gemma 3 4B via llama.cpp
-// is the macOS 14-25 path, sharing the weights the meeting summariser uses.
+// decodes it. Apple Foundation Models (macOS 26+) is preferred; Gemma 3 4B via
+// llama.cpp is the macOS 14-25 path, sharing the summariser's weights.
 @MainActor
 enum EditInterpreter {
-    // Largest selection handed to a model. Both backends cap near a
-    // 4096-token window; 4000 characters leaves room for the instructions and
-    // the response. Enforced at hotkey press so an oversized selection is
-    // refused before recording starts.
+    // Both backends cap near a 4096-token window; 4000 characters leaves room
+    // for the instructions and the response. Enforced at hotkey press so an
+    // oversized selection is refused before recording starts.
     static let maxSelectionCharacters = 4000
 
     enum Failure: LocalizedError {
@@ -48,15 +45,15 @@ enum EditInterpreter {
                 return
                     "Voice Edit isn't available in this language. Download Gemma in Settings → Features."
             case .backend:
-                // Generic for the HUD; the underlying error is logged by the
-                // caller. Raw backend errors are too technical for the pill.
+                // Raw backend errors are too technical for the pill; the caller
+                // logs the underlying error.
                 return "Voice Edit failed. Try again."
             }
         }
     }
 
     private static let log = Logger(
-        subsystem: "com.arunbrahma.purr", category: "edit-interpreter")
+        subsystem: "com.arunbrahma.hello", category: "edit-interpreter")
 
     static var isAvailable: Bool {
         appleFoundationReady || LLMModelManager.isInstalled()
@@ -69,9 +66,8 @@ enum EditInterpreter {
         return false
     }
 
-    // Fire-and-forget warm of the active backend. Called the moment the
-    // voice-edit hotkey is pressed so a cold Gemma load overlaps with the
-    // user speaking instead of stalling the edit.
+    // Called the moment the voice-edit hotkey is pressed so a cold Gemma load
+    // overlaps with the user speaking instead of stalling the edit.
     static func warmUp() {
         if appleFoundationReady {
             #if canImport(FoundationModels)
@@ -145,12 +141,10 @@ enum EditInterpreter {
             raw = response.content
         } catch let error as LanguageModelSession.GenerationError {
             if case .exceededContextWindowSize = error { throw Failure.selectionTooLong }
-            // Apple FM can reject the instruction's language at generation
-            // time even when `supportsLocale()` passed — it returns true for
-            // "close" languages too. Fall through to Gemma when it's
-            // installed, matching MeetingSummarizer's locale fallback;
-            // otherwise tell the user how to get a backend that can handle
-            // this language.
+            // Apple FM can reject the instruction's language at generation time
+            // even when `supportsLocale()` passed — it returns true for "close"
+            // languages too. Fall through to Gemma when installed, matching
+            // MeetingSummarizer's locale fallback.
             if case .unsupportedLanguageOrLocale = error {
                 guard LLMModelManager.isInstalled() else {
                     log.info("Apple FM rejected the instruction locale; Gemma not installed.")
@@ -176,7 +170,7 @@ enum EditInterpreter {
     {
         let prompt = gemmaPrompt(instruction: instruction, selection: selection)
         // 1400 output tokens covers a holistic rewrite of a max-size selection;
-        // targeted edits stop early at end-of-turn so the cap doesn't slow them.
+        // targeted edits stop early at end-of-turn.
         let parameters = LlamaSession.Parameters(maxTokens: 1400, temperature: 0.2)
 
         let work = Task { try await LlamaRuntime.shared.generate(prompt: prompt, parameters: parameters) }
@@ -210,13 +204,11 @@ enum EditInterpreter {
             return rewrite
 
         case .targeted:
-            // Guardrail: a 'targeted' edit whose find string covers most of
-            // the selection is usually a rewrite the model mislabelled — or a
-            // runaway find — so reject it rather than letting it overwrite. The
-            // exception is a find that *is* the whole selection: that's the user
-            // selecting exactly the word/phrase to swap ("select 'linked', say
-            // 'change to tonight'"), a clean, intended replacement. Allow it,
-            // matching the case-insensitivity the apply step uses below.
+            // A 'targeted' edit whose find string covers most of the selection
+            // is usually a mislabelled rewrite or a runaway find, so reject it.
+            // The exception is a find that *is* the whole selection - the user
+            // selected exactly the phrase to swap - which is allowed, matching
+            // the case-insensitivity the apply step uses below.
             let trimmedSelection = selection.trimmingCharacters(in: .whitespacesAndNewlines)
             for span in plan.edits where span.find.count > selection.count * 6 / 10 {
                 let coversWholeSelection =
@@ -257,11 +249,10 @@ enum EditInterpreter {
         -> String
     {
         let result = sanitize(edited, selectionWasWrapped: isWrapped(selection))
-        // A targeted edit is interior: it must not change the passage's
-        // ending punctuation. If the selection had no terminal . ? ! and the
-        // edit introduced one (ASR completing the spoken phrase), strip it.
-        // Holistic rewrites are left alone — the user asked to transform the
-        // text, so model-chosen punctuation is intentional.
+        // A targeted edit is interior and must not change the passage's ending
+        // punctuation, so strip a terminator the edit introduced (ASR
+        // completing the spoken phrase). Holistic rewrites are left alone —
+        // there, model-chosen punctuation is intentional.
         guard case .targeted = plan.scope else { return result }
         let terminators: Set<Character> = [".", "?", "!", "…"]
         let selectionTerminated =
@@ -274,8 +265,8 @@ enum EditInterpreter {
         return trimmed
     }
 
-    // Strips quote / code-fence wrapping the model occasionally adds around
-    // its answer. Only unwraps when the selection itself wasn't wrapped, so a
+    // Strips quote / code-fence wrapping the model occasionally adds around its
+    // answer, but only when the selection itself wasn't wrapped so a
     // legitimately quoted selection survives.
     private static func sanitize(_ text: String, selectionWasWrapped: Bool) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -310,7 +301,7 @@ enum EditInterpreter {
     // MARK: - Response parsing
 
     // Parses the fenced text protocol both backends are asked to emit. Returns
-    // nil if nothing usable is found — the caller then leaves the selection
+    // nil when nothing usable is found, so the caller leaves the selection
     // untouched rather than guessing.
     private static func parsePlan(_ raw: String) -> VoiceEditPlan? {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -414,9 +405,9 @@ enum EditInterpreter {
         """
     }
 
-    // Gemma takes the role, format, and request in one user turn wrapped in
-    // Gemma 3's chat template — the BOS token is added by the tokenizer,
-    // <end_of_turn> closes the user turn.
+    // Gemma takes role, format, and request in one user turn: it has no system
+    // role. The BOS token is added by the tokenizer, <end_of_turn> closes the
+    // user turn.
     private static func gemmaPrompt(instruction: String, selection: String) -> String {
         let body = """
             \(systemPrompt)

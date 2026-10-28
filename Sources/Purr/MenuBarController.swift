@@ -1,9 +1,8 @@
 import AppKit
 import Combine
 
-// NSStatusItem-based menu bar surface. Icon reflects coordinator state so a
-// glance at the top-right of the screen tells you whether Purr is idle,
-// recording, or transcribing - even when the floating HUD is dismissed.
+// NSStatusItem-based menu bar surface. The icon reflects coordinator state so
+// Purr's status is readable even when the floating HUD is dismissed.
 @MainActor
 final class MenuBarController {
     private let statusItem: NSStatusItem
@@ -19,8 +18,7 @@ final class MenuBarController {
         ?? templateSymbol(named: "mic")
     private lazy var iconRecording = templateSymbol(named: "mic.fill")
     // Transcribing and meeting pair the speech glyph with a second symbol so a
-    // glance distinguishes them from plain dictation: mic + waveform while a
-    // transcript is being produced, mic + record-dot while a meeting records.
+    // glance distinguishes them from plain dictation.
     private lazy var iconTranscribing = templateComposite(["mic", "waveform"])
     private lazy var iconMeeting = templateComposite(["mic.fill", "record.circle.fill"])
     private lazy var iconError = templateSymbol(named: "exclamationmark.triangle")
@@ -37,13 +35,11 @@ final class MenuBarController {
         self.onShowOnboarding = onShowOnboarding
         self.onQuit = onQuit
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.autosaveName = "com.arunbrahma.purr.statusItem"
+        statusItem.autosaveName = "com.arunbrahma.hello.statusItem"
 
         configureButton()
         rebuildMenu()
 
-        // The coordinator folds dictation, voice-edit, and meeting activity
-        // into one signal; we just map it to a glyph.
         stateCancellable = coordinator.$menuBarStatus.sink { [weak self] status in
             self?.applyStatus(status)
         }
@@ -63,10 +59,9 @@ final class MenuBarController {
         menu.addItem(menuItem(title: "Settings", selector: #selector(triggerSettings)))
         menu.addItem(menuItem(title: "Onboarding Setup", selector: #selector(triggerOnboarding)))
         menu.addItem(.separator())
-        // The Quit key equivalent is cosmetic - it makes ⌃⌥Q visible next to
-        // the item. The actual global hotkey is dispatched by HotkeyManager via
-        // CGEventTap, and both paths converge on the same closure. Settings and
-        // Onboarding Setup have no global hotkey, so they show no shortcut.
+        // The Quit key equivalent is cosmetic - it only makes ⌃⌥Q visible. The
+        // actual global hotkey is dispatched by HotkeyManager via CGEventTap,
+        // and both paths converge on the same closure.
         menu.addItem(
             menuItem(
                 title: "Quit Purr",
@@ -131,10 +126,9 @@ final class MenuBarController {
 
     // Loads a bundled vector glyph as a menu-bar template image, scaled to
     // `height` points (width follows the asset's aspect ratio). Prefers the PDF
-    // (resolution-independent, stays crisp at any menu-bar scale) and falls back
-    // to a PNG if present. isTemplate lets macOS tint it for light/dark bars and
-    // the recording-state highlight exactly like the SF Symbol states. Returns
-    // nil if no asset is found so the caller can fall back to a system symbol.
+    // so it stays crisp at any menu-bar scale. isTemplate lets macOS tint it
+    // like the SF Symbol states. Returns nil when no asset is found, so the
+    // caller can fall back to a system symbol.
     private func templateImage(named name: String, height: CGFloat) -> NSImage? {
         let url = ["pdf", "png"].lazy
             .compactMap { Bundle.main.url(forResource: name, withExtension: $0) }
@@ -146,12 +140,10 @@ final class MenuBarController {
         return image
     }
 
-    // Draws several SF Symbols left-to-right into one image. Marking the result
-    // isTemplate lets the menu bar tint it exactly like a single template
-    // symbol, so the composite adapts to light/dark menu bars. The
-    // drawingHandler re-renders at the display's scale (crisp on Retina); each
-    // source symbol draws at its natural size so it matches the single-symbol
-    // states, vertically centred against the tallest glyph.
+    // Draws several SF Symbols left-to-right into one image. isTemplate lets the
+    // menu bar tint the composite like a single symbol; the drawingHandler
+    // re-renders at the display's scale (crisp on Retina). Each source symbol
+    // draws at its natural size so it matches the single-symbol states.
     private func templateComposite(_ names: [String]) -> NSImage? {
         let symbols = names.compactMap {
             NSImage(systemSymbolName: $0, accessibilityDescription: "Purr status")
