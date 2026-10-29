@@ -42,7 +42,7 @@ final class MeetingPipeline: ObservableObject {
 
     private static let systemLevelDecay: Float = 0.8
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "meeting")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "meeting")
 
     init(parakeet: ParakeetEngine, hud: RecordingHUD, summarizer: MeetingSummarizer) {
         self.parakeet = parakeet

@@ -42,8 +42,8 @@ final class SystemAudioCapture {
     private var levelContinuation: AsyncStream<Float>.Continuation?
     private(set) var levels: AsyncStream<Float> = AsyncStream { _ in }
     private let queue = DispatchQueue(
-        label: "com.arunbrahma.hello.systemaudio", qos: .userInitiated)
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "systemaudio")
+        label: "com.arunbrahma.purr.systemaudio", qos: .userInitiated)
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "systemaudio")
 
     // A peak below this (~-60 dBFS) means the tap delivered only silence. The
     // usual cause is a denied "System Audio Recording" permission: macOS still

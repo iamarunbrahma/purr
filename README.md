@@ -184,8 +184,8 @@ Already dragged Purr to the Trash? Put it back, open it and click **Uninstall…
 
 ```bash
 rm -rf ~/Library/Application\ Support/Purr     # models + meetings
-rm -rf ~/Library/Caches/com.arunbrahma.hello   # caches
-defaults delete com.arunbrahma.hello           # preferences
+rm -rf ~/Library/Caches/com.arunbrahma.purr   # caches
+defaults delete com.arunbrahma.purr           # preferences
 ```
 
 Older versions also kept Whisper files in `~/Documents/huggingface`. Delete that folder too if no other app uses it.

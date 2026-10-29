@@ -16,7 +16,7 @@ import ApplicationServices
 // A bundle ID change or repeated ad-hoc re-signing can invalidate prior grants -
 // they're bound to a code signature designation that no longer matches. The fix
 // is removing the old System Settings entry (or `tccutil reset Accessibility
-// com.arunbrahma.hello`) and granting again.
+// com.arunbrahma.purr`) and granting again.
 enum Permissions {
     enum Kind: String, CaseIterable, Identifiable {
         case microphone, accessibility, systemAudio

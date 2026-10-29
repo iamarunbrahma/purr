@@ -6,7 +6,7 @@ import os.log
 // for paragraphs, some apps misinterpret rapid synthetic keystrokes, and
 // emojis/combining characters need extra care.
 final class TextInserter {
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "paste")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "paste")
 
     // V on a US ANSI keyboard.
     private let kVKey: CGKeyCode = 9

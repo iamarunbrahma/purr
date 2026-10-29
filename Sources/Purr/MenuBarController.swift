@@ -48,7 +48,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         self.blockedShortcuts = { [weak coordinator] in coordinator?.shortcutsBlockedBySecureInput ?? [] }
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        statusItem.autosaveName = "com.arunbrahma.hello.statusItem"
+        statusItem.autosaveName = "com.arunbrahma.purr.statusItem"
 
         configureButton()
         rebuildMenu()

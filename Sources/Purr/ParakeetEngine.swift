@@ -34,7 +34,7 @@ final class ParakeetEngine: TranscriptionEngine {
     private var streamingManager: StreamingEouAsrManager?
     private var streamingWarmupTask: Task<Void, Never>?
     let eouDownload = DownloadReporter()
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet")
 
     // 320ms: FluidAudio's benchmarks put it at 4.88% WER vs 8.23% at 160ms,
     // and latency is still well inside the threshold where typing feels live.
@@ -326,7 +326,7 @@ final class StreamingEouAsrSession: StreamingSession {
     private let manager: StreamingEouAsrManager
     private let inputFormat: AVAudioFormat
     private let diff = PartialDiff()
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet.eou")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet.eou")
     // Audio since the current utterance began, handed out with its
     // .endOfUtterance. Positions count samples fed since start():
     // `utteranceStart` is the utterance's first sample, `managerOrigin` the

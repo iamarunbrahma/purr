@@ -30,7 +30,7 @@ enum AXSelection {
         }
     }
 
-    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "ax")
+    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "ax")
 
     // Throws if AX is denied, nothing is focused, or the element doesn't
     // expose its selection.

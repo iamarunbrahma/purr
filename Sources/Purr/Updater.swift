@@ -47,7 +47,7 @@ final class Updater: ObservableObject {
         string: "https://api.github.com/repos/iamarunbrahma/purr"
     )!
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "updater")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "updater")
     private var downloader: UpdateDownloader?
 
     var currentVersion: String {

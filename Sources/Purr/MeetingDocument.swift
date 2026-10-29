@@ -11,7 +11,7 @@ import os.log
 // "H ello"). Stable speaker IDs ("speaker_0001") become display labels
 // ("Speaker 1") in the order they first speak.
 enum MeetingDocument {
-    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "meetingdoc")
+    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "meetingdoc")
 
     struct Output {
         let markdown: String

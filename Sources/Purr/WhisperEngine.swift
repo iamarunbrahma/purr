@@ -15,7 +15,7 @@ final class WhisperEngine: TranscriptionEngine {
 
     private var pipe: WhisperKit?
     private var loadedModel: String?
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "whisper")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "whisper")
 
     init(modelName: String) {
         self.modelIdentifier = modelName

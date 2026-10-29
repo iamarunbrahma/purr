@@ -125,9 +125,9 @@ final class AppCoordinator: ObservableObject {
     // Lets the global quit hotkey drive the same path as the status-bar item.
     private var onQuit: (() -> Void)?
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "coordinator")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "coordinator")
     // Own category so the per-utterance flow reads without state-transition noise.
-    private let postLog = Logger(subsystem: "com.arunbrahma.hello", category: "postprocess")
+    private let postLog = Logger(subsystem: "com.arunbrahma.purr", category: "postprocess")
 
     func setMenuActions(quit: @escaping () -> Void) {
         self.onQuit = quit

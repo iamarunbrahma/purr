@@ -11,7 +11,7 @@ actor LlamaRuntime {
     static let shared = LlamaRuntime()
 
     private var session: LlamaSession?
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "llama-runtime")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "llama-runtime")
 
     private init() {}
 

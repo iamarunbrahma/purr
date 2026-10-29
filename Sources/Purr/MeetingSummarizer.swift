@@ -58,7 +58,7 @@ final class MeetingSummarizer {
         case none
     }
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "summarizer")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "summarizer")
 
     // Hard ceiling on transcript characters fed to the model; longer meetings
     // get a head/tail truncation. 24K chars ≈ 6K tokens of English, leaving

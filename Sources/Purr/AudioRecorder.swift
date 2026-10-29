@@ -80,7 +80,7 @@ final class AudioRecorder: @unchecked Sendable {
     // check watches it to tell a live unit from a started-but-NoConnection one.
     private var renderSuccessCount = 0
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "audio")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "audio")
 
     init() {
         guard

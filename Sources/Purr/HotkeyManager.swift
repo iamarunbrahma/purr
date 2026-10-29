@@ -52,7 +52,7 @@ final class HotkeyManager {
     // the shortcut), so they're dead until it clears. Shown in the menu.
     private(set) var secureInputGaps: [String] = []
 
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "hotkey")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "hotkey")
 
     // Right-side modifier device codes (NSEvent.keyCode on flagsChanged).
     // Hardcoded from IOHIDFamily because Carbon's kVK_* constants don't

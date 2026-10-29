@@ -7,7 +7,7 @@ import os.log
 // and caches are deleted outright, by a helper that runs once Purr has quit so
 // nothing can write them back.
 enum Uninstaller {
-    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "uninstall")
+    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "uninstall")
 
     enum Failure: LocalizedError {
         case noBundleID

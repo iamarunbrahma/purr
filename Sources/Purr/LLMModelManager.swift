@@ -12,7 +12,7 @@ import os.log
 //
 // Gemma 4 is Apache 2.0; Settings links the license before a download.
 enum LLMModelManager {
-    private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "llm-models")
+    private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "llm-models")
 
     static let defaultModelFilename = "gemma-4-E2B_q4_0-it.gguf"
     static let defaultModelLabel = "Gemma 4 E2B"

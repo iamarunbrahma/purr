@@ -12,9 +12,9 @@ struct PostProcessor {
     var dictionary: [DictionaryEntry]
 
     // Watch the passes live with:
-    //   log stream --predicate 'subsystem == "com.arunbrahma.hello"
+    //   log stream --predicate 'subsystem == "com.arunbrahma.purr"
     //   AND category == "postprocess"' --level debug
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "postprocess")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "postprocess")
 
     func apply(_ raw: String) -> ProcessResult {
         var text = raw

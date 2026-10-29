@@ -177,7 +177,7 @@ final class ModelStore: ObservableObject {
     private var observers: Set<AnyCancellable> = []
     private var pollTimer: Timer?
     private var measuring: Task<Void, Never>?
-    private let log = Logger(subsystem: "com.arunbrahma.hello", category: "summarizer")
+    private let log = Logger(subsystem: "com.arunbrahma.purr", category: "summarizer")
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator

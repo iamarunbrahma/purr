@@ -13,7 +13,7 @@ struct SettingsView: View {
     @State private var pane: SettingsPane? = .general
 
     // Shows General, where missing permissions are listed.
-    static let showPermissions = Notification.Name("com.arunbrahma.hello.showPermissions")
+    static let showPermissions = Notification.Name("com.arunbrahma.purr.showPermissions")
 
     var body: some View {
         Group {
