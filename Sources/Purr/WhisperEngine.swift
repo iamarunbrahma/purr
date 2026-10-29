@@ -31,6 +31,10 @@ final class WhisperEngine: TranscriptionEngine {
             let folder = try await ModelManager.localFolder(for: modelIdentifier)
             let cfg = WhisperKitConfig(
                 modelFolder: folder.path,
+                // WhisperKit fetches the tokenizer on first load, by default into
+                // ~/Documents/huggingface. In the model's own folder it goes with
+                // the model when that's deleted or Purr is uninstalled.
+                tokenizerFolder: folder,
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,

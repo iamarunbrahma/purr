@@ -86,6 +86,11 @@ private struct GeneralPane: View {
     // Settings since) and kept for the visit, so each row can show Allowed.
     @State private var showsPermissions = !Permissions.allGranted()
     @State private var confirmingReset = false
+    @State private var confirmingUninstall = false
+    @State private var uninstallSummary = ""
+    @State private var isUninstalling = false
+    @State private var uninstallError: String?
+    @State private var uninstallErrorToken = 0
 
     var body: some View {
         Form {
@@ -150,6 +155,27 @@ private struct GeneralPane: View {
                     Button("Reset…") { confirmingReset = true }
                 }
                 .help("Restores every preference. Downloaded models stay on this Mac.")
+                LabeledContent {
+                    if isUninstalling {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Uninstall…", role: .destructive) {
+                            uninstallSummary = makeUninstallSummary()
+                            confirmingUninstall = true
+                        }
+                        .disabled(models.isDownloading)
+                    }
+                } label: {
+                    Text("Uninstall Purr")
+                    if let uninstallError {
+                        Text(uninstallError)
+                    } else if models.isDownloading {
+                        Text("Wait for the download to finish")
+                    }
+                }
+                .help(
+                    "Moves Purr, its models and your meetings to the Trash, and removes its settings and permissions."
+                )
             }
         }
         .formStyle(.grouped)
@@ -166,6 +192,63 @@ private struct GeneralPane: View {
             }
         } message: {
             Text("Downloaded models stay on this Mac.")
+        }
+        .confirmationDialog("Uninstall Purr?", isPresented: $confirmingUninstall) {
+            Button("Uninstall", role: .destructive) { uninstall() }
+        } message: {
+            Text(uninstallSummary)
+        }
+    }
+
+    // Built when Uninstall… is clicked, not in the dialog: its message is
+    // built on every render of this pane, and this lists the meeting folders.
+    private func makeUninstallSummary() -> String {
+        let movesApp = Uninstaller.canMoveApp
+        var moved = movesApp ? ["Purr"] : []
+        if models.totalBytesOnDisk > 0 {
+            let size = ByteCountFormatter.string(fromByteCount: models.totalBytesOnDisk, countStyle: .file)
+            moved.append("its models (\(size))")
+        }
+        let meetings = Uninstaller.meetingCount(in: Uninstaller.meetingFolders)
+        if meetings > 0 {
+            moved.append("the notes and recordings from \(meetings) meeting\(meetings == 1 ? "" : "s")")
+        }
+        let deletes = "Purr's settings, caches and permissions"
+        let summary =
+            moved.isEmpty
+            ? "Deletes \(deletes)."
+            : "Moves \(ListFormatter.localizedString(byJoining: moved)) to the Trash, and deletes \(deletes)."
+        return summary
+            + (movesApp
+                ? " Purr quits when it's done."
+                : " Purr can't move itself from where it's running, so drag it to the Trash after it quits.")
+    }
+
+    private func uninstall() {
+        uninstallError = nil
+        isUninstalling = true
+        Task {
+            switch await coordinator.uninstall() {
+            case .ok:
+                // Straight away, with no alert or await first: see Uninstaller.run.
+                NSApp.terminate(nil)
+            case .busy:
+                showUninstallError("Busy recording, transcribing or downloading. Try again in a moment.")
+            case .failed(let error):
+                showUninstallError(error.localizedDescription)
+            }
+            isUninstalling = false
+        }
+    }
+
+    // Clears itself after a few seconds, like Delete All's.
+    private func showUninstallError(_ message: String) {
+        uninstallError = message
+        uninstallErrorToken += 1
+        let token = uninstallErrorToken
+        Task {
+            try? await Task.sleep(for: .seconds(6))
+            if uninstallErrorToken == token { uninstallError = nil }
         }
     }
 

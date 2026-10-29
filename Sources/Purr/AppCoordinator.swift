@@ -50,6 +50,12 @@ final class AppCoordinator: ObservableObject {
         case failed(Error)
     }
 
+    enum UninstallResult {
+        case ok
+        case busy
+        case failed(Error)
+    }
+
     @Published private(set) var state: State = .idle {
         didSet {
             if oldValue != state {  // avoid spamming the log on a re-asserted state
@@ -152,6 +158,9 @@ final class AppCoordinator: ObservableObject {
 
         // The recorder self-skips warming on Bluetooth to avoid pinning SCO mode.
         recorder.allowsWarmKeeping = true
+        // Off the main actor: on a cold system this takes ~2 s, which the first
+        // dictation would otherwise wait on.
+        Task.detached(priority: .userInitiated) { AudioRecorder.prepareForFirstStart() }
 
         meeting = MeetingPipeline(parakeet: parakeet, hud: hud, summarizer: summarizer)
         voiceEditor = VoiceEditor(hud: hud) { [weak self] in
@@ -333,18 +342,7 @@ final class AppCoordinator: ObservableObject {
     // Meeting transcripts and preferences are left untouched.
     @discardableResult
     func deleteAllModels() async -> DeleteAllModelsResult {
-        guard canQuitSafely() else { return .busy }
-        if streamingSession != nil || streamingStartupInFlight { return .busy }
-        if voiceEditState != .idle { return .busy }
-        if parakeetBatchProgress != nil || eouDownloadProgress != nil { return .busy }
-        if meetingLanguageModelProgress != nil { return .busy }
-
-        // So no deleted file stays mmap'd behind a live handle.
-        await summarizer.unload()
-        meeting.unloadDiarizer()
-        parakeet.unloadStreamingManager()
-        parakeet.unloadBatchManager()
-        parakeet.unloadMeetingManager()
+        guard await releaseModelsIfIdle() else { return .busy }
 
         do {
             try ModelManager.deleteAllModels()
@@ -375,6 +373,43 @@ final class AppCoordinator: ObservableObject {
         installHotkeys()
         log.info("All models deleted; dependent features turned off.")
         return .ok
+    }
+
+    // Settings › General › Uninstall. On .ok the caller quits straight away:
+    // Purr's files are in the Trash, its permissions are reset, and the
+    // cleanup helper is waiting for this process to exit.
+    func uninstall() async -> UninstallResult {
+        guard await releaseModelsIfIdle() else { return .busy }
+        do {
+            try Uninstaller.run()
+            return .ok
+        } catch {
+            log.error("Uninstall failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(error)
+        }
+    }
+
+    // Shared by deleteAllModels and uninstall: refuses while anything records,
+    // transcribes or downloads, then unloads every model so no deleted file
+    // stays mmap'd behind a live handle.
+    private func releaseModelsIfIdle() async -> Bool {
+        guard isIdle() else { return false }
+        await summarizer.unload()
+        // A hotkey can start a recording while unload() awaits.
+        guard isIdle() else { return false }
+        meeting.unloadDiarizer()
+        parakeet.unloadStreamingManager()
+        parakeet.unloadBatchManager()
+        parakeet.unloadMeetingManager()
+        return true
+    }
+
+    private func isIdle() -> Bool {
+        guard canQuitSafely() else { return false }
+        if streamingSession != nil || streamingStartupInFlight { return false }
+        if voiceEditState != .idle { return false }
+        if parakeetBatchProgress != nil || eouDownloadProgress != nil { return false }
+        return meetingLanguageModelProgress == nil
     }
 
     private func rebuildEngine(initial: Bool) {

@@ -53,7 +53,7 @@ open /Applications/Purr.app
 
 First launch:
 
-1. A short setup picks the speech engine, downloads its model (~450 MB for Parakeet), and asks for Microphone and Accessibility. Accessibility is one switch in System Settings, and Purr notices the moment it's on.
+1. A short setup picks the speech engine, downloads its model (~450 MB for Parakeet), and asks for Microphone and Accessibility.
 2. Click into any text field, hold **Right Option**, speak, release.
 
 ## Hot Keys
@@ -169,23 +169,26 @@ Open the menu bar > About Purr and it checks GitHub Releases automatically (or c
 <details>
 <summary><strong>Why was I asked to grant permissions again after an update?</strong></summary>
 
-Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…, which opens the missing ones in Settings > General.
+Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…
 
 </details>
 
 <details>
 <summary><strong>How do I delete the models or fully uninstall Purr?</strong></summary>
 
-To reclaim disk space without uninstalling, open **Settings > Customization > Models** and click **Delete Models**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
+To reclaim disk space without uninstalling, open **Settings > Models** and click **Delete All…**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
 
-To uninstall completely, quit Purr, drag `Purr.app` to the Trash, then remove its data. Everything Purr writes - all model weights and your meeting transcripts - lives under one folder:
+To uninstall completely, open **Settings > General** and click **Uninstall…**. Purr moves itself, its models and your meetings to the Trash, deletes its preferences and caches, resets its permissions, and quits.
+
+Already dragged Purr to the Trash? Put it back, open it and click **Uninstall…**, or remove what it left yourself:
 
 ```bash
-rm -rf ~/Library/Application\ Support/Purr   # models + meeting transcripts
-defaults delete com.arunbrahma.hello          # preferences
+rm -rf ~/Library/Application\ Support/Purr     # models + meetings
+rm -rf ~/Library/Caches/com.arunbrahma.hello   # caches
+defaults delete com.arunbrahma.hello           # preferences
 ```
 
-macOS can't run cleanup code when an app is dragged to the Trash, so those are the only leftovers. Because every model now lives under that single folder, app-cleaner utilities that search for "Purr" find all of it too.
+Older versions also kept Whisper files in `~/Documents/huggingface`. Delete that folder too if no other app uses it.
 
 </details>
 

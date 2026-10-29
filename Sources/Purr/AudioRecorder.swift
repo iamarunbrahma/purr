@@ -220,14 +220,33 @@ final class AudioRecorder: @unchecked Sendable {
     // AUHAL setup / teardown
     // ------------------------------------------------------------------
 
+    private static let halOutputDescription = AudioComponentDescription(
+        componentType: kAudioUnitType_Output,
+        componentSubType: kAudioUnitSubType_HALOutput,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0,
+        componentFlagsMask: 0
+    )
+
+    // Runs the two one-time setup costs of a process's first start(), so the
+    // first press doesn't wait on them. Later starts reuse both:
+    // - The first Audio Unit lookup fetches the component list from macOS's
+    //   AudioComponentRegistrar, which exits when idle. Its cold start includes
+    //   an x86-64 plug-in scan under Rosetta and can take ~2 s.
+    // - Core Audio's in-process setup (audio server connection, device list,
+    //   voice isolation) took 0.1-0.5 s. Reading the default input runs it
+    //   without opening the mic. Skipped until mic access is granted, so it
+    //   can never be what prompts.
+    static func prepareForFirstStart() {
+        var desc = halOutputDescription
+        _ = AudioComponentFindNext(nil, &desc)
+        if Permissions.isGranted(.microphone) {
+            _ = currentDefaultInputDeviceID()
+        }
+    }
+
     private func openAUHAL() throws {
-        var desc = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
+        var desc = Self.halOutputDescription
         guard let comp = AudioComponentFindNext(nil, &desc) else {
             throw AudioError.auhalSetup(selector: "AudioComponentFindNext", status: -1)
         }

@@ -358,7 +358,13 @@ final class PermissionsModel: ObservableObject {
     func request(_ kind: Permissions.Kind) {
         switch kind {
         case .microphone:
-            Permissions.requestMicrophone { [weak self] _ in self?.refresh() }
+            Permissions.requestMicrophone { [weak self] granted in
+                // Launch skips Core Audio's setup until mic access is granted.
+                if granted {
+                    Task.detached(priority: .userInitiated) { AudioRecorder.prepareForFirstStart() }
+                }
+                self?.refresh()
+            }
         case .accessibility:
             awaitingAccessibility = true
             accessibilityStillOff = false
