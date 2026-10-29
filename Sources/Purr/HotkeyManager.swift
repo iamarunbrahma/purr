@@ -66,6 +66,9 @@ final class HotkeyManager {
 
     deinit { uninstall() }
 
+    // False until Accessibility is on: the tap can't be created before that.
+    var isInstalled: Bool { tap != nil }
+
     func setBindings(_ new: [Binding]) {
         self.bindings = new
         self.heldDown = Dictionary(uniqueKeysWithValues: new.map { ($0.action, false) })
@@ -80,6 +83,13 @@ final class HotkeyManager {
 
     func install() {
         uninstall()
+
+        // A listen-only key tap created without Accessibility makes macOS ask
+        // for Input Monitoring instead, which Purr doesn't use. Wait for it.
+        guard Permissions.isGranted(.accessibility) else {
+            log.info("Hotkey tap waits for Accessibility.")
+            return
+        }
 
         let mask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
@@ -102,7 +112,7 @@ final class HotkeyManager {
                 userInfo: userInfo
             )
         else {
-            log.error("CGEvent.tapCreate failed - Input Monitoring permission probably not granted yet.")
+            log.error("CGEvent.tapCreate failed.")
             return
         }
 

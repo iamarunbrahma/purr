@@ -15,8 +15,7 @@ enum LLMModelManager {
     private static let log = Logger(subsystem: "com.arunbrahma.hello", category: "llm-models")
 
     static let defaultModelFilename = "gemma-4-E2B_q4_0-it.gguf"
-    static let defaultModelLabel = "Gemma 4 E2B Instruct (Q4_0)"
-    static let defaultModelSizeMB = 3_350
+    static let defaultModelLabel = "Gemma 4 E2B"
     static let defaultModelURL = URL(
         string:
             "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf"

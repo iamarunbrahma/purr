@@ -53,9 +53,8 @@ open /Applications/Purr.app
 
 First launch:
 
-1. Walks you through Microphone, Accessibility, and Input Monitoring permissions.
+1. A short setup picks the speech engine, downloads its model (~450 MB for Parakeet), and asks for Microphone and Accessibility. Accessibility is one switch in System Settings, and Purr notices the moment it's on.
 2. Click into any text field, hold **Right Option**, speak, release.
-3. First launch downloads the ~450 MB Parakeet model in the background; once it finishes, dictation is near-instant.
 
 ## Hot Keys
 
@@ -170,7 +169,7 @@ Open the menu bar > About Purr and it checks GitHub Releases automatically (or c
 <details>
 <summary><strong>Why was I asked to grant permissions again after an update?</strong></summary>
 
-Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Onboarding Setup.
+Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…, which opens the missing ones in Settings > General.
 
 </details>
 

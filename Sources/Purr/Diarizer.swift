@@ -24,9 +24,10 @@ final class Diarizer {
         }
     }
 
-    // Same work as warmup() but propagates errors instead of logging-and-swallowing them.
+    // Same work as warmup() but propagates errors instead of logging-and-swallowing
+    // them, and fetches the files again if they were deleted while loaded.
     func downloadAndWarmup() async throws {
-        if manager != nil { return }
+        if manager != nil, Self.isInstalled() { return }
         let m = OfflineDiarizerManager(config: .default)
         try await m.prepareModels(directory: ModelManager.modelsDirectory)
         self.manager = m
@@ -60,9 +61,7 @@ final class Diarizer {
     }
 
     static func isInstalled() -> Bool {
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: modelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        ModelManager.filesComplete(ModelNames.OfflineDiarizer.requiredModels, in: modelDirectory)
     }
 
     static func delete() throws {

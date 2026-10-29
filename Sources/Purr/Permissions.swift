@@ -1,48 +1,44 @@
 import AVFoundation
 import AppKit
 import ApplicationServices
-import IOKit.hid
 
-// Reads the three TCC states we depend on, and requests the two that can be
-// requested programmatically (Accessibility and Input Monitoring).
+// Reads the TCC states Purr depends on, and asks for each one from inside the
+// app wherever macOS allows it:
 //
-// Calling AXIsProcessTrustedWithOptions and IOHIDRequestAccess does two things
-// macOS won't do automatically:
-//   1. Registers the app in the right System Settings pane. Until these are
-//      called once, the app isn't listed at all.
-//   2. Shows the system prompt the FIRST time only. After deny/dismiss the user
-//      must toggle manually, which is why "Grant" also opens the pane.
+//   - Microphone and system audio show macOS's own Allow prompt in place.
+//   - Accessibility can't be switched on by any app itself. Purr's
+//     AXIsProcessTrusted() checks are enough for System Settings to list it,
+//     so Allow opens that pane for one switch, and the grant reads live.
+//     Accessibility also covers the hotkey's listen-only event tap - it grants
+//     both posting and listening for events - which is why Purr doesn't ask
+//     for Input Monitoring.
 //
 // A bundle ID change or repeated ad-hoc re-signing can invalidate prior grants -
 // they're bound to a code signature designation that no longer matches. The fix
 // is removing the old System Settings entry (or `tccutil reset Accessibility
-// com.arunbrahma.hello` / `tccutil reset ListenEvent com.arunbrahma.hello`)
-// and granting again.
+// com.arunbrahma.hello`) and granting again.
 enum Permissions {
     enum Kind: String, CaseIterable, Identifiable {
-        case microphone, accessibility, inputMonitoring
+        case microphone, accessibility, systemAudio
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .microphone: return "Microphone"
             case .accessibility: return "Accessibility"
-            case .inputMonitoring: return "Input Monitoring"
+            case .systemAudio: return "System Audio"
             }
         }
         var why: String {
             switch self {
-            case .microphone:
-                return "Purr needs access to record your voice."
-            case .accessibility:
-                return "Required so Purr can paste your transcript at the cursor."
-            case .inputMonitoring:
-                return "Required so Purr can listen for the global hotkey across every app."
+            case .microphone: return "So Purr can hear you."
+            case .accessibility: return "So Purr can see its shortcut and type at your cursor."
+            case .systemAudio: return "Optional. Lets meeting notes include the other people on a call."
             }
         }
         var settingsURL: URL {
-            // Pane IDs occasionally change between macOS versions; these three
-            // have been stable since Ventura.
+            // Pane IDs occasionally change between macOS versions; these have
+            // been stable since Ventura. System audio sits under Screen Recording.
             switch self {
             case .microphone:
                 return URL(
@@ -50,82 +46,99 @@ enum Permissions {
             case .accessibility:
                 return URL(
                     string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-            case .inputMonitoring:
+            case .systemAudio:
                 return URL(
-                    string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
+                    string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+            }
+        }
+    }
+
+    enum Status { case granted, notDetermined, denied }
+
+    // What dictation needs. System audio is only for meetings, which fall back
+    // to the microphone without it.
+    static let required: [Kind] = [.microphone, .accessibility]
+
+    // nil only for system audio, if TCC's private calls are ever gone.
+    static func status(_ kind: Kind) -> Status? {
+        switch kind {
+        case .microphone:
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized: return .granted
+            case .notDetermined: return .notDetermined
+            default: return .denied
+            }
+        case .accessibility:
+            // Do NOT "live-probe" via AXUIElementCopyAttributeValue on
+            // AXUIElementCreateSystemWide() - it succeeds for our own focused
+            // window even when untrusted, a false positive. macOS can't say
+            // whether the switch was turned off or never on, and the fix is the
+            // same switch either way.
+            return AXIsProcessTrusted() ? .granted : .notDetermined
+        case .systemAudio:
+            guard let preflight = TCC.preflight else { return nil }
+            switch preflight(TCC.audioCapture, nil) {
+            case 0: return .granted
+            case 1: return .denied
+            default: return .notDetermined
             }
         }
     }
 
     static func isGranted(_ kind: Kind) -> Bool {
-        switch kind {
-        case .microphone:
-            return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        case .accessibility:
-            // Do NOT "live-probe" via AXUIElementCopyAttributeValue on
-            // AXUIElementCreateSystemWide() - it succeeds for our own focused
-            // window even when untrusted, a false positive. This result can lag
-            // for the life of the process when the user toggles the switch on a
-            // running app; the relaunch button is the documented workaround.
-            return AXIsProcessTrusted()
-        case .inputMonitoring:
-            // IOHIDCheckAccess is the canonical prompt-free read.
-            return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-        }
+        status(kind) == .granted
     }
 
     static func allGranted() -> Bool {
-        Kind.allCases.allSatisfy(isGranted)
+        required.allSatisfy(isGranted)
     }
 
+    // requestAccess only prompts while the status is .notDetermined; once
+    // denied, macOS never re-prompts (not even after relaunch), and System
+    // Settings is the only way back.
     static func requestMicrophone(_ completion: @escaping (Bool) -> Void) {
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async { completion(granted) }
         }
     }
 
-    // requestAccess only prompts while the status is .notDetermined; once
-    // denied it returns false with no UI at all (macOS never re-prompts a denied
-    // app, not even after relaunch), so the denied case deep-links to System
-    // Settings - the only way back.
-    static func grantMicrophone(_ completion: @escaping () -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .notDetermined:
-            requestMicrophone { _ in completion() }
-        default:
-            openSettings(for: .microphone)
-            completion()
+    // Like the microphone, macOS asks once and never again after an answer.
+    static func requestSystemAudio(_ completion: @escaping () -> Void) {
+        guard let request = TCC.request else { return completion() }
+        request(TCC.audioCapture, nil) { _ in
+            DispatchQueue.main.async(execute: completion)
         }
-    }
-
-    // Adds Purr to the Accessibility list in System Settings; prompts on the
-    // first call only.
-    @discardableResult
-    static func requestAccessibility() -> Bool {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let options = [key: true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
-    }
-
-    // Same idea for Input Monitoring (macOS 10.15+).
-    @discardableResult
-    static func requestInputMonitoring() -> Bool {
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
     static func openSettings(for kind: Kind) {
         NSWorkspace.shared.open(kind.settingsURL)
     }
 
-    // System Audio Recording (kTCCServiceAudioCapture) is not one of the three
-    // Kinds: it has no public status API and no programmatic request - the only
-    // prompt fires when a Core Audio process tap first starts, and never again
-    // once answered. So there's no live status or prompting "Grant", only a
-    // deep-link to the pane, which macOS groups under ScreenCapture.
-    static let systemAudioSettingsURL = URL(
-        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-
     static func openSystemAudioSettings() {
-        NSWorkspace.shared.open(systemAudioSettingsURL)
+        openSettings(for: .systemAudio)
+    }
+
+    // Posted by macOS when the Accessibility list changes. Undocumented but
+    // long-standing, so it only speeds things up: whoever listens also polls,
+    // and re-reads a moment later, as the trust read can trail it.
+    static let accessibilityChanged = Notification.Name("com.apple.accessibility.api")
+
+    // System Audio Recording (kTCCServiceAudioCapture) has no public API to
+    // read or request: macOS asks once, when a Core Audio process tap first
+    // starts. TCC's own preflight and request calls do both, but they're
+    // private, so they're looked up at runtime, as insidegui/AudioCap does. If
+    // an update removes them, status(.systemAudio) is nil, setup leaves the
+    // row out, and the first meeting asks as before.
+    private enum TCC {
+        typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
+        typealias Request =
+            @convention(c) (CFString, CFDictionary?, @escaping @convention(block) (Bool) -> Void) -> Void
+
+        static let audioCapture = "kTCCServiceAudioCapture" as CFString
+        private static let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW)
+        static let preflight = handle.flatMap { dlsym($0, "TCCAccessPreflight") }
+            .map { unsafeBitCast($0, to: Preflight.self) }
+        static let request = handle.flatMap { dlsym($0, "TCCAccessRequest") }
+            .map { unsafeBitCast($0, to: Request.self) }
     }
 }

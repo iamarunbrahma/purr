@@ -14,10 +14,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let secureInputDetail = NSMenuItem()
     private let secureInputSeparator = NSMenuItem.separator()
     private let blockedShortcuts: () -> [String]
+    // Shown while Microphone or Accessibility is off, which leaves dictation
+    // dead. Also re-checked in menuNeedsUpdate(_:).
+    private let permissionsItem = NSMenuItem()
+    private let permissionsSeparator = NSMenuItem.separator()
 
     private let onShowAbout: () -> Void
     private let onShowSettings: () -> Void
-    private let onShowOnboarding: () -> Void
+    private let onShowPermissions: () -> Void
     private let onQuit: () -> Void
 
     private lazy var iconIdle =
@@ -34,12 +38,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         coordinator: AppCoordinator,
         onShowAbout: @escaping () -> Void,
         onShowSettings: @escaping () -> Void,
-        onShowOnboarding: @escaping () -> Void,
+        onShowPermissions: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.onShowAbout = onShowAbout
         self.onShowSettings = onShowSettings
-        self.onShowOnboarding = onShowOnboarding
+        self.onShowPermissions = onShowPermissions
         self.onQuit = onQuit
         self.blockedShortcuts = { [weak coordinator] in coordinator?.shortcutsBlockedBySecureInput ?? [] }
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -72,10 +76,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(item)
         }
 
+        permissionsItem.title = "Permissions Needed…"
+        permissionsItem.action = #selector(triggerPermissions)
+        permissionsItem.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+        for item in [permissionsItem, permissionsSeparator] {
+            item.isHidden = Permissions.allGranted()
+            menu.addItem(item)
+        }
+
         menu.addItem(menuItem(title: "About Purr", selector: #selector(triggerAbout)))
         menu.addItem(.separator())
         menu.addItem(menuItem(title: "Settings", selector: #selector(triggerSettings)))
-        menu.addItem(menuItem(title: "Onboarding Setup", selector: #selector(triggerOnboarding)))
         menu.addItem(.separator())
         // The Quit key equivalent is cosmetic - it only makes ⌃⌥Q visible. The
         // actual global hotkey is dispatched by HotkeyManager via CGEventTap,
@@ -110,6 +122,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     // combinations to Carbon hotkeys, so this lists only the ones Carbon
     // refused because another app already owns them.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        let granted = Permissions.allGranted()
+        permissionsItem.isHidden = granted
+        permissionsSeparator.isHidden = granted
+
         let blocked = blockedShortcuts()
         for item in [secureInputTitle, secureInputDetail, secureInputSeparator] {
             item.isHidden = blocked.isEmpty
@@ -139,7 +155,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func triggerAbout() { onShowAbout() }
     @objc private func triggerSettings() { onShowSettings() }
-    @objc private func triggerOnboarding() { onShowOnboarding() }
+    @objc private func triggerPermissions() { onShowPermissions() }
     @objc private func triggerQuit() { onQuit() }
 
     // ------------------------------------------------------------------

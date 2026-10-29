@@ -67,12 +67,12 @@ final class AppCoordinator: ObservableObject {
 
     @Published private(set) var menuBarStatus: MenuBarStatus = .idle
 
-    // 0..1 while downloading, nil otherwise - drives the Engine tab's cards
-    // for both an automatic warmup download and a manual Download tap.
-    @Published private(set) var parakeetBatchProgress: Double?
-    @Published private(set) var eouDownloadProgress: Double?
+    // Non-nil while downloading - drives Settings' model rows for both an
+    // automatic warmup download and a manual Download tap.
+    @Published private(set) var parakeetBatchProgress: ModelDownloadProgress?
+    @Published private(set) var eouDownloadProgress: ModelDownloadProgress?
     // Unlike the other two, this one never auto-downloads during warmup.
-    @Published private(set) var meetingLanguageModelProgress: Double?
+    @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
 
     // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the glyph.
     private var meetingActive = false
@@ -100,6 +100,7 @@ final class AppCoordinator: ObservableObject {
     private var voiceEditor: VoiceEditor!
     private var meetingObserver: AnyCancellable?
     private var voiceEditObserver: AnyCancellable?
+    private var accessibilityObserver: NSObjectProtocol?
 
     private var levelTask: Task<Void, Never>?
     // Lets a genuine mic-still-waking failure be told apart from a quick
@@ -129,14 +130,14 @@ final class AppCoordinator: ObservableObject {
     func start() {
         rebuildEngine(initial: true)
 
-        parakeet.onBatchProgress = { [weak self] fraction in
-            self?.parakeetBatchProgress = fraction
+        parakeet.batchDownload.onChange = { [weak self] progress in
+            self?.parakeetBatchProgress = progress
         }
-        parakeet.onEOUProgress = { [weak self] fraction in
-            self?.eouDownloadProgress = fraction
+        parakeet.eouDownload.onChange = { [weak self] progress in
+            self?.eouDownloadProgress = progress
         }
-        parakeet.onMeetingBatchProgress = { [weak self] fraction in
-            self?.meetingLanguageModelProgress = fraction
+        parakeet.meetingBatchDownload.onChange = { [weak self] progress in
+            self?.meetingLanguageModelProgress = progress
         }
 
         // A stale "on" without the EOU model on disk (an older build, or EOU
@@ -180,7 +181,21 @@ final class AppCoordinator: ObservableObject {
         }
 
         installHotkeys()
-        Task { await engine.warmup() }  // eager, so the first press pays no load cost
+        accessibilityObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Permissions.accessibilityChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                // The trust read can trail the notification by a moment.
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.installHotkeysIfNeeded()
+            }
+        }
+
+        // Eager, so the first press pays no load cost - except before setup,
+        // whose engine step decides which model gets downloaded.
+        if SettingsStore.shared.onboardingDone {
+            Task { await engine.warmup() }
+        }
     }
 
     func reloadEngine() {
@@ -189,6 +204,14 @@ final class AppCoordinator: ObservableObject {
     }
 
     func reinstallHotkey() {
+        installHotkeys()
+    }
+
+    // The hotkey tap can't exist until Accessibility is on, so one that failed
+    // is retried when macOS reports the switch changed, and when the
+    // permission rows see the grant themselves.
+    func installHotkeysIfNeeded() {
+        guard !hotkey.isInstalled, Permissions.isGranted(.accessibility) else { return }
         installHotkeys()
     }
 
@@ -395,8 +418,8 @@ final class AppCoordinator: ObservableObject {
                     onRelease: { [weak self] in self?.voiceEditor.handleRelease() }
                 ))
         }
-        // Hardcoded, always-on, gated on canQuitSafely(). Settings and
-        // Onboarding live in the menu bar dropdown only - no global shortcut.
+        // Hardcoded, always-on, gated on canQuitSafely(). Settings lives in
+        // the menu bar dropdown only - no global shortcut.
         bindings.append(
             .init(
                 action: .quit,
@@ -606,6 +629,7 @@ final class AppCoordinator: ObservableObject {
             let raw = try await engine.transcribe(samples: prepared.samples)
             let processed = makePostProcessor().apply(raw)
             if processed.text.isEmpty {
+                log.info("Transcript empty - nothing to paste.")
                 state = .idle
                 if processed.dropPreviousChunks > 0 {
                     hud.showMessage("Nothing to scratch here", autoHideAfter: 2.5)
@@ -613,6 +637,7 @@ final class AppCoordinator: ObservableObject {
                     hud.hide()
                 }
             } else if SettingsStore.shared.autoPaste {
+                log.info("Pasting \(processed.text.count, privacy: .public) characters.")
                 inserter.insert(processed.text + " ")
                 state = .idle
                 if micWasVeryQuiet {

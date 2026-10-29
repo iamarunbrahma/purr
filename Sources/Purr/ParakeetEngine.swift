@@ -25,19 +25,15 @@ final class ParakeetEngine: TranscriptionEngine {
     // Coalesces concurrent callers (an automatic warmup and a manual Settings
     // download can fire at once) onto one in-flight download.
     private var batchLoadTask: Task<Void, Error>?
-    // 0..1 while downloading, nil when done, to whichever @Published the
-    // coordinator wires up. `batchDownloadActive` gates late callbacks that
-    // could land after the download finished.
-    var onBatchProgress: ((Double?) -> Void)?
-    private var batchDownloadActive = false
+    // Each model's download progress, to whichever @Published the
+    // coordinator wires up.
+    let batchDownload = DownloadReporter()
     private var meetingBatchManager: AsrManager?
     private var meetingBatchLoadTask: Task<Void, Error>?
-    var onMeetingBatchProgress: ((Double?) -> Void)?
-    private var meetingBatchDownloadActive = false
+    let meetingBatchDownload = DownloadReporter()
     private var streamingManager: StreamingEouAsrManager?
     private var streamingWarmupTask: Task<Void, Never>?
-    var onEOUProgress: ((Double?) -> Void)?
-    private var eouDownloadActive = false
+    let eouDownload = DownloadReporter()
     private let log = Logger(subsystem: "com.arunbrahma.hello", category: "parakeet")
 
     // 320ms: FluidAudio's benchmarks put it at 4.88% WER vs 8.23% at 160ms,
@@ -64,9 +60,11 @@ final class ParakeetEngine: TranscriptionEngine {
 
     // Throwing variant of warmup's batch load: propagates errors and reports
     // progress, for the Settings download button. Coalesces with any
-    // concurrent warmup so the weights are only ever pulled once.
+    // concurrent warmup so the weights are only ever pulled once. A model
+    // still loaded after its files were deleted (in Finder, say) is fetched
+    // again, so the disk matches what Settings shows.
     func downloadAndLoadBatchManager() async throws {
-        if batchManager != nil { return }
+        if batchManager != nil, Self.batchIsInstalled() { return }
         if let inFlight = batchLoadTask {
             try await inFlight.value
             return
@@ -84,26 +82,11 @@ final class ParakeetEngine: TranscriptionEngine {
     private func loadBatchManager() async throws {
         // Only surface progress when weights will actually be fetched - a
         // load-from-disk on warmup shouldn't flash "downloading…".
-        let willDownload = !Self.batchIsInstalled()
-        if willDownload {
-            batchDownloadActive = true
-            onBatchProgress?(0)
-        }
-        defer {
-            if willDownload {
-                batchDownloadActive = false
-                onBatchProgress?(nil)
-            }
-        }
-        let progressHandler: ProgressHandler? = { [weak self] progress in
-            let fraction = progress.fractionCompleted
-            Task { @MainActor in
-                guard let self, self.batchDownloadActive else { return }
-                self.onBatchProgress?(fraction)
-            }
-        }
+        let reporter = Self.batchIsInstalled() ? nil : batchDownload
+        reporter?.begin()
+        defer { reporter?.end() }
         let models = try await AsrModels.downloadAndLoad(
-            to: Self.batchModelDirectory, version: .v2, progressHandler: progressHandler)
+            to: Self.batchModelDirectory, version: .v2, progressHandler: reporter?.handler)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
@@ -115,7 +98,7 @@ final class ParakeetEngine: TranscriptionEngine {
     // shape, so a manual Settings download and a meeting hitting a
     // non-English language don't race two pulls into the same folder.
     func downloadAndLoadMeetingManager() async throws {
-        if meetingBatchManager != nil { return }
+        if meetingBatchManager != nil, Self.meetingModelIsInstalled() { return }
         if let inFlight = meetingBatchLoadTask {
             try await inFlight.value
             return
@@ -129,26 +112,11 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     private func loadMeetingManager() async throws {
-        let willDownload = !Self.meetingModelIsInstalled()
-        if willDownload {
-            meetingBatchDownloadActive = true
-            onMeetingBatchProgress?(0)
-        }
-        defer {
-            if willDownload {
-                meetingBatchDownloadActive = false
-                onMeetingBatchProgress?(nil)
-            }
-        }
-        let progressHandler: ProgressHandler? = { [weak self] progress in
-            let fraction = progress.fractionCompleted
-            Task { @MainActor in
-                guard let self, self.meetingBatchDownloadActive else { return }
-                self.onMeetingBatchProgress?(fraction)
-            }
-        }
+        let reporter = Self.meetingModelIsInstalled() ? nil : meetingBatchDownload
+        reporter?.begin()
+        defer { reporter?.end() }
         let models = try await AsrModels.downloadAndLoad(
-            to: Self.meetingModelDirectory, version: .v3, progressHandler: progressHandler)
+            to: Self.meetingModelDirectory, version: .v3, progressHandler: reporter?.handler)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
@@ -171,11 +139,9 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     static func meetingModelIsInstalled() -> Bool {
-        guard
-            let contents = try? FileManager.default.contentsOfDirectory(
-                atPath: meetingModelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        ModelManager.filesComplete(
+            ModelNames.ASR.requiredModelsV3().union([ModelNames.ASR.vocabularyFile]),
+            in: meetingModelDirectory)
     }
 
     static func meetingModelDelete() throws {
@@ -197,31 +163,16 @@ final class ParakeetEngine: TranscriptionEngine {
     // Propagates download errors (network down, HF outage) instead of
     // swallowing them, for the Smart Typing card's Download button.
     func downloadAndLoadStreamingManager() async throws {
-        guard streamingManager == nil else { return }
-        let willDownload = !Self.eouIsInstalled()
-        if willDownload {
-            eouDownloadActive = true
-            onEOUProgress?(0)
-        }
-        defer {
-            if willDownload {
-                eouDownloadActive = false
-                onEOUProgress?(nil)
-            }
-        }
+        if streamingManager != nil, Self.eouIsInstalled() { return }
+        let reporter = Self.eouIsInstalled() ? nil : eouDownload
+        reporter?.begin()
+        defer { reporter?.end() }
         let manager = StreamingEouAsrManager(
             configuration: MLModelConfiguration(),
             chunkSize: Self.streamingChunk,
             eouDebounceMs: 1280
         )
-        let progressHandler: ProgressHandler? = { [weak self] progress in
-            let fraction = progress.fractionCompleted
-            Task { @MainActor in
-                guard let self, self.eouDownloadActive else { return }
-                self.onEOUProgress?(fraction)
-            }
-        }
-        try await manager.loadModels(to: ModelManager.modelsDirectory, progressHandler: progressHandler)
+        try await manager.loadModels(to: ModelManager.modelsDirectory, progressHandler: reporter?.handler)
         streamingManager = manager
         log.info(
             "Parakeet EOU streaming downloaded and warmed up (\(Self.streamingChunk.durationMs, privacy: .public) ms chunks)."
@@ -251,10 +202,8 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     static func batchIsInstalled() -> Bool {
-        guard
-            let contents = try? FileManager.default.contentsOfDirectory(atPath: batchModelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        ModelManager.filesComplete(
+            ModelNames.ASR.requiredModels.union([ModelNames.ASR.vocabularyFile]), in: batchModelDirectory)
     }
 
     static func batchDelete() throws {
@@ -271,10 +220,12 @@ final class ParakeetEngine: TranscriptionEngine {
         ModelManager.modelsDirectory.appendingPathComponent("parakeet-eou-streaming", isDirectory: true)
     }
 
+    // Checks the variant streamingChunk loads, not just the parent folder.
     static func eouIsInstalled() -> Bool {
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: eouModelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        ModelManager.filesComplete(
+            ModelNames.ParakeetEOU.requiredModels,
+            in: ModelManager.modelsDirectory.appendingPathComponent(
+                Repo.parakeetEou320.folderName, isDirectory: true))
     }
 
     static func eouDelete() throws {
@@ -545,6 +496,41 @@ final class StreamingEouAsrSession: StreamingSession {
             dst.update(from: base, count: samples.count)
         }
         return buffer
+    }
+}
+
+// One model download's progress, as Settings shows it: `.starting` from
+// begin(), each FluidAudio reading after it only ever forward, nothing once
+// end() has run, then nil.
+@MainActor
+final class DownloadReporter {
+    var onChange: ((ModelDownloadProgress?) -> Void)?
+    private var current: ModelDownloadProgress?
+
+    func begin() {
+        current = .starting
+        onChange?(current)
+    }
+
+    func end() {
+        current = nil
+        onChange?(nil)
+    }
+
+    // FluidAudio calls it off the main actor, on every chunk of bytes.
+    nonisolated var handler: ProgressHandler {
+        { [weak self] progress in
+            guard let reading = ModelDownloadProgress(progress) else { return }
+            Task { @MainActor in self?.advance(to: reading) }
+        }
+    }
+
+    private func advance(to reading: ModelDownloadProgress) {
+        guard let current else { return }
+        let next = current.advanced(to: reading)
+        guard next != current else { return }
+        self.current = next
+        onChange?(next)
     }
 }
 

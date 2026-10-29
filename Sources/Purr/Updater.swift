@@ -13,7 +13,7 @@ import os.log
 //
 // Releases are signed with a stable Developer ID (Team 5JCFRMC367), so TCC
 // keys off the designated requirement rather than a per-build cdhash and
-// Accessibility + Input Monitoring grants survive an update. They are lost
+// Accessibility and Microphone grants survive an update. They are lost
 // only if the bundle ID or signing identity changes.
 //
 // Caveat: the helper's codesign gate is NOT pinned to our Team ID - any bundle

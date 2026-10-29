@@ -65,11 +65,12 @@ Purr's permission set is unusual. You should know what you are trusting.
 To type into arbitrary applications, Purr holds:
 
 - **Microphone** - records your voice
-- **Accessibility** - reads and writes text in other applications' fields
-- **Input Monitoring** with a global `CGEventTap` - observes keystrokes system-wide to
-  detect its hotkeys
+- **Accessibility** - reads and writes text in other applications' fields, and lets a global
+  `CGEventTap` observe keystrokes system-wide to detect its hotkeys
 - **System audio capture** (meeting mode, macOS 14.2+) - records everything your Mac plays,
-  including other participants on a call
+  including other participants on a call. macOS has no public API to check or request this
+  permission, so Purr calls TCC's private `TCCAccessPreflight` and `TCCAccessRequest`,
+  looked up at runtime
 
 **App Sandbox is intentionally disabled.** `CGEventTap` and paste injection do not work
 reliably from a sandboxed process across arbitrary host applications. This is documented in

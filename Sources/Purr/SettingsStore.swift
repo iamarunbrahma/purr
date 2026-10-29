@@ -23,6 +23,7 @@ final class SettingsStore: ObservableObject {
         static let modelName = "stt.modelName"
         static let autoPaste = "stt.autoPaste"
         static let onboardingDone = "onboarding.done"
+        static let onboardingStep = "onboarding.step"
         static let engine = "stt.engine"
         static let translateToEnglish = "stt.translateToEnglish"
         static let translationSourceLanguage = "stt.translationSourceLanguage"
@@ -52,20 +53,6 @@ final class SettingsStore: ObservableObject {
         case parakeet
         case whisper
         var id: String { rawValue }
-        var label: String {
-            switch self {
-            case .parakeet: return "Parakeet TDT v2 (recommended)"
-            case .whisper: return "Whisper"
-            }
-        }
-        var summary: String {
-            switch self {
-            case .parakeet:
-                return
-                    "10× faster on Apple Silicon. English-only, top accuracy. No silence hallucinations. Streaming-capable."
-            case .whisper: return "100+ languages including Asian and Arabic. Batch only."
-            }
-        }
     }
 
     enum HotkeyMode: String, Codable, CaseIterable, Identifiable {
@@ -125,6 +112,12 @@ final class SettingsStore: ObservableObject {
 
     @Published var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Keys.onboardingDone) }
+    }
+
+    // The setup step to reopen on, so a relaunch mid-setup resumes there.
+    var onboardingStep: Int {
+        get { defaults.integer(forKey: Keys.onboardingStep) }
+        set { defaults.set(newValue, forKey: Keys.onboardingStep) }
     }
 
     // Set after the silent-system-audio warning shows once, so it never nags again.
@@ -294,6 +287,20 @@ final class SettingsStore: ObservableObject {
         // Seed the defaults so a fresh launch lands on the documented hotkey even if nothing was stored yet.
         if storedKey == nil && storedMods == nil {
             self.hotkey = Hotkey.defaultRightOption
+        }
+    }
+
+    // Whisper has no streaming engine; clear Smart Typing rather than leave it
+    // "on" with no effect. Not re-enabled on switching back - explicit opt-in.
+    func switchEngine(to engine: Engine) {
+        self.engine = engine
+        if engine == .whisper {
+            smartTyping = false
+            // Force off if the model can't translate, so the toggle isn't
+            // stuck on against a disabled row.
+            if !ModelManager.supportsTranslation(modelName) {
+                translateToEnglish = false
+            }
         }
     }
 

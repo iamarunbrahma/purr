@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // Owns long-lived singletons and does no work itself - the pipeline lives in
@@ -6,8 +7,9 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: AppCoordinator!
     private var menuBar: MenuBarController!
-    private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var settingsWindowStyle: AnyCancellable?
+    private var modelStore: ModelStore?
     private var aboutWindow: NSWindow?
     private let updater = Updater()
 
@@ -17,7 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator: coordinator,
             onShowAbout: { [weak self] in self?.showAbout() },
             onShowSettings: { [weak self] in self?.showSettings() },
-            onShowOnboarding: { [weak self] in self?.showOnboarding() },
+            onShowPermissions: { [weak self] in
+                self?.showSettings()
+                NotificationCenter.default.post(name: SettingsView.showPermissions, object: nil)
+            },
             onQuit: { NSApp.terminate(nil) }
         )
 
@@ -29,36 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         coordinator.start()
 
-        if !SettingsStore.shared.onboardingDone || !Permissions.allGranted() {
-            // First launch, or a permission was revoked in System Settings:
-            // walk the user through the TCC prompts before they reach for a
-            // hotkey that won't fire.
-            showOnboarding()
+        // Setup runs once, in the Settings window, which turns into Settings
+        // when it's done. A permission turned off later shows up in the menu
+        // and in Settings › General instead.
+        if !SettingsStore.shared.onboardingDone {
+            showSettings()
         }
-    }
-
-    private func showOnboarding() {
-        if let win = onboardingWindow {
-            win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        // onboardingWindow isn't assigned until below, so capture self and read
-        // it lazily when the button fires.
-        let view = OnboardingView(onFinish: { [weak self] in self?.onboardingWindow?.close() })
-            .textSelection(.enabled)
-        let host = NSHostingController(rootView: view)
-        // OnboardingView pins its own width, so the ideal content size yields a
-        // window sized exactly to the content - no clipping, no empty padding.
-        host.sizingOptions = .preferredContentSize
-        let win = NSWindow(contentViewController: host)
-        win.title = "Welcome to Purr"
-        win.styleMask = [.titled, .closable]
-        win.center()
-        win.isReleasedWhenClosed = false
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        onboardingWindow = win
     }
 
     private func showAbout() {
@@ -80,22 +61,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         aboutWindow = win
     }
 
+    @MainActor
     private func showSettings() {
         if let win = settingsWindow {
+            modelStore?.startWatching()
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = SettingsView(coordinator: coordinator).textSelection(.enabled)
-        let host = NSHostingController(rootView: view)
+        let models = ModelStore(coordinator: coordinator)
+        let host = NSHostingController(rootView: SettingsView(coordinator: coordinator, models: models))
+        // Sized by the window, so it can be resized past the view's minimum.
+        host.sizingOptions = [.minSize]
         let win = NSWindow(contentViewController: host)
-        win.title = "Purr - Settings"
-        win.styleMask = [.titled, .closable, .miniaturizable]
-        win.setContentSize(NSSize(width: 560, height: 600))
+        win.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        // Setup's steps name themselves, so its title bar stays empty until
+        // the window becomes Settings.
+        settingsWindowStyle = SettingsStore.shared.$onboardingDone.sink { [weak win] done in
+            win?.title = done ? "Purr Settings" : "Welcome to Purr"
+            win?.titleVisibility = done ? .visible : .hidden
+            win?.titlebarAppearsTransparent = !done
+        }
+        win.setContentSize(NSSize(width: 740, height: 560))
         win.center()
         win.isReleasedWhenClosed = false
+        win.delegate = self
+        models.startWatching()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = win
+        modelStore = models
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    // The Settings window is kept for reuse, so its disk polling stops here
+    // and showSettings() restarts it.
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === settingsWindow {
+            modelStore?.stopWatching()
+        }
     }
 }
