@@ -2,31 +2,12 @@
 
 ## 0.0.2 - Unreleased
 
-- Transcribe meetings in 27 more languages with Parakeet v3.
-- Meeting summaries are written in the meeting's language.
-- Optionally save each meeting's audio next to its notes.
-- Keep a meeting's audio when its transcription fails.
-- Summaries and Voice Edit use Gemma 4 E2B instead of Gemma 3 4B.
-- Pick Apple Intelligence or Gemma for Voice Edit.
-- Uninstall Purr from Settings > General.
-- Redesigned Settings and first-run setup. Input Monitoring is no longer needed.
-- Copy, paste and undo work in Purr's own text fields.
-- About checks for updates every time it opens.
-- Purr asks before quitting in the middle of a recording.
-- Fixed Whisper writing English when you speak another language.
-- Fixed garbled "You" lines in meetings when the call plays through the speakers.
-- Fixed Smart Typing sometimes dropping a sentence.
-- Fixed the first dictation after launch waiting about 2 seconds for the mic.
-- Fixed the menu bar icon sometimes not showing up.
-- Fixed "new line" and "new paragraph" leaving a stray comma, and "colon" leaving a space before the mark.
-- Fixed "tab key" typing a space instead of a tab.
-- Fixed dictation starting in lowercase after a filler word like "um" or after "new paragraph".
-- Fixed made-up "You" lines in meetings when your mic is muted.
-- Dictation recovers instead of staying stuck on "Transcribing" when Core ML stalls.
-- A Whisper model loads as soon as it downloads, so the first dictation doesn't wait for it.
-- A Gemma download that breaks off picks up where it stopped when you retry.
-- Whisper's tokenizer is stored with its model instead of in ~/Documents/huggingface.
-
-## 0.0.1 - 2026-06-15
-
-- First release: dictation with Parakeet or Whisper, Smart Typing, meeting notes with summaries, Voice Edit, voice commands and a custom dictionary.
+- Dictation with Parakeet (English) or Whisper (about 100 languages), typed into any app.
+- Smart Typing, which types as you speak.
+- Meeting notes from your mic and system audio, with speaker labels, in English and 27 more languages.
+- Meeting summaries in the meeting's language, with Apple Intelligence or Gemma 4 E2B.
+- Voice Edit, which rewrites selected text from a spoken instruction.
+- Voice commands, filler trimming and a custom vocabulary.
+- Meeting audio saved next to the notes, if you want it.
+- Updates from GitHub Releases, checked when About opens.
+- Uninstall from Settings > General.
