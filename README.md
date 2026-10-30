@@ -13,6 +13,10 @@ Dictation, meeting notes and voice editing that run entirely on your Mac.
 
 </div>
 
+## Video Demo
+
+https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
+
 ## Features
 
 - **Dictate** into any text field. Hold a key, talk, let go.
