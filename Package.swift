@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "Purr", targets: ["Purr"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.1.1"),
         // FluidAudio - Parakeet TDT v2 (English) and v3 (other meeting
         // languages), Parakeet EOU streaming for Smart Typing, and the meeting
         // speaker diarizer.
