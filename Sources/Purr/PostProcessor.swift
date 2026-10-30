@@ -3,7 +3,7 @@ import os.log
 
 // Deterministic post-processing passes (no LLM, no network) so they stay fast
 // (<5ms total on M2) and predictable. Order matters: filler trim → voice
-// commands → dictionary → spacing cleanup.
+// commands → capitals → dictionary → spacing cleanup.
 struct PostProcessor {
     var trimFillers: Bool
     var customFillerWords: [FillerWordEntry]
@@ -42,6 +42,8 @@ struct PostProcessor {
             }
         }
 
+        text = restoreCapitals(text, raw: raw)
+
         let beforeDict = text
         text = applyDictionary(text)
         if text != beforeDict {
@@ -49,18 +51,20 @@ struct PostProcessor {
         }
 
         // Whitespace cleanup, in order:
-        //   1. collapse runs of spaces/tabs,
+        //   1. collapse runs of spaces,
         //   2. pull a stray space into voice-command punctuation ("do it ?" -> "do
         //      it?") - sentence marks only, never the emoji faces or opening
         //      brackets that carry intentional spacing,
-        //   3. strip spaces hugging a "new line" break ("plan \n okay" -> "plan\nokay"),
-        //   4. trim leading/trailing spaces, keeping newlines so a "new line"-only
-        //      utterance still carries its break.
-        text = text.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+        //   3. strip spaces hugging a "new line" or "tab key" break ("plan \n okay"
+        //      -> "plan\nokay"),
+        //   4. trim leading/trailing spaces, keeping newlines and tabs so a
+        //      break-only utterance still carries its break.
+        // Tabs only ever come from "tab key" or a custom command, so they stay.
+        text = text.replacingOccurrences(of: " +", with: " ", options: .regularExpression)
         text = text.replacingOccurrences(
-            of: #"[ \t]+([,.?!…])"#, with: "$1", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
-        text = text.trimmingCharacters(in: .whitespaces)
+            of: #" +([,.?!…])"#, with: "$1", options: .regularExpression)
+        text = text.replacingOccurrences(of: #" *([\n\t]) *"#, with: "$1", options: .regularExpression)
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: " "))
 
         log.debug(
             "final: '\(text, privacy: .public)' (trimFillers=\(trimFillers, privacy: .public), voiceCommands=\(voiceCommandsEnabled, privacy: .public))"
@@ -259,17 +263,22 @@ struct PostProcessor {
     // the regex engine doesn't consume a prefix and leave a stray word.
     // Categories are applied in array order.
     private static let builtInCommandCatalog: [CommandCategory] = [
+        // A break absorbs the mark the ASR model puts after the command and a
+        // comma before it ("Eggs, new line, milk." -> "Eggs\nmilk."). A period
+        // before it stays, since it ends the sentence.
         CommandCategory(
             replacements: [
-                (#"\bnew paragraph\b\.?"#, "\n\n"),
-                (#"\bnew line\b\.?"#, "\n"),
-                (#"\btab key\b\.?"#, "\t"),
+                (#"(?:,[ \t]*)?\bnew paragraph\b[,.;:?!]?"#, "\n\n"),
+                (#"(?:,[ \t]*)?\bnew line\b[,.;:?!]?"#, "\n"),
+                (#"(?:,[ \t]*)?\btab key\b[,.;:?!]?"#, "\t"),
             ]),
         // Sentence punctuation also absorbs a mark the ASR model already put on
         // either side of the spoken command ("questions, question mark." ->
         // "questions?", not "questions,?"). Spaces are only taken along with a
         // leading mark: a bare "close quote period" must keep its " ." apart so
-        // the quote's own `\.?` can't swallow the period.
+        // the quote's own `\.?` can't swallow the period. Semicolon and colon
+        // take the space before them too, since the cleanup in apply() leaves
+        // ; and : alone for the emoji faces.
         CommandCategory(
             replacements: [
                 (#"(?:[,.;:][ \t]*)?\bquestion mark\b[,.;:?!]?"#, "?"),
@@ -277,8 +286,8 @@ struct PostProcessor {
                 (#"(?:[,.;:][ \t]*)?\bfull stop\b[,.;:?!]?"#, "."),
                 (#"(?:[,.;:][ \t]*)?\bperiod\b[,.;:?!]?"#, "."),
                 (#"(?:[,.;:][ \t]*)?\bcomma\b[,.;:?!]?"#, ","),
-                (#"(?:[,.;:][ \t]*)?\bsemicolon\b[,.;:?!]?"#, ";"),
-                (#"(?:[,.;:][ \t]*)?\bcolon\b[,.;:?!]?"#, ":"),
+                (#"[ \t]*(?:[,.;:][ \t]*)?\bsemicolon\b[,.;:?!]?"#, ";"),
+                (#"[ \t]*(?:[,.;:][ \t]*)?\bcolon\b[,.;:?!]?"#, ":"),
                 (#"(?:[,.;:][ \t]*)?\bellipsis\b[,.;:?!]?"#, "…"),
             ]),
         CommandCategory(
@@ -364,7 +373,42 @@ struct PostProcessor {
     ]
 
     // ------------------------------------------------------------------
-    // Pass 3: user dictionary
+    // Pass 3: capitals
+    // ------------------------------------------------------------------
+
+    // A removed filler or command can take a capital with it. This gives it back to:
+    //   - the first word, when the model started the utterance with a capital
+    //     ("Um, so I think" -> "So I think"),
+    //   - the first word after a break that follows a sentence end
+    //     ("ready. New paragraph, please" -> "ready.\n\nPlease"),
+    //   - the first word of a paragraph, even when the model heard a comma
+    //     before the command ("works, new paragraph, thanks" -> "works\n\nThanks").
+    // Runs before the dictionary, so a lowercase replacement there stays lowercase.
+    private func restoreCapitals(_ text: String, raw: String) -> String {
+        var result = text
+        if raw.first?.isUppercase == true {
+            result = Self.capitalize(matching: #"^\s*(\p{Ll})"#, in: result)
+        }
+        return Self.capitalize(matching: #"(?:[.?!…][ \t]*|\n[ \t]*)\n\s*(\p{Ll})"#, in: result)
+    }
+
+    // Uppercases each letter `pattern` captures, unless its word already has a
+    // capital inside ("iPhone", "macOS").
+    private static func capitalize(matching pattern: String, in text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern + #"(?![\p{L}'’]*\p{Lu})"#) else {
+            return text
+        }
+        let result = NSMutableString(string: text)
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: result.length))
+        for match in matches.reversed() {
+            let letter = match.range(at: 1)
+            result.replaceCharacters(in: letter, with: result.substring(with: letter).uppercased())
+        }
+        return result as String
+    }
+
+    // ------------------------------------------------------------------
+    // Pass 4: user dictionary
     // ------------------------------------------------------------------
 
     private func applyDictionary(_ text: String) -> String {
