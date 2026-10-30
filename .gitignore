@@ -4,13 +4,8 @@ DerivedData/
 build/
 dist/
 *.xcodeproj/
-Package.resolved
 .DS_Store
 .claude/
 
-# App Store Connect API private key (notary credentials) — never commit.
+# App Store Connect API private key (notary credentials). Never commit it.
 AuthKey_*.p8
-
-# Local-only Playwright artifacts produced when iterating on the website.
-.playwright-mcp/
-/*.png

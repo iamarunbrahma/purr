@@ -81,7 +81,7 @@ final class MeetingPipeline: ObservableObject {
             try recorder.start()
             startSystemCapture()
             state = .recording(startedAt: Date())
-            // The recording pill is opt-out (Settings → Features). When hidden
+            // The recording pill is opt-out (Settings → Meetings). When hidden
             // the meeting still records; the menu bar carries the indicator.
             if SettingsStore.shared.showMeetingHUD {
                 hud.show(.meeting(elapsed: 0))
@@ -363,7 +363,7 @@ final class MeetingPipeline: ObservableObject {
         }
         switch summarizerError {
         case .backendUnavailable:
-            return "Meeting summaries need an AI model. Set one up in Settings → Features."
+            return "Meeting summaries need an AI model. Set one up in Settings → Meetings."
         case .unsupportedLocale:
             return summarizerError.errorDescription ?? generic
         case .contentFlagged(let reason):

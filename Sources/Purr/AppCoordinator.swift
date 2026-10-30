@@ -147,15 +147,11 @@ final class AppCoordinator: ObservableObject {
             self?.meetingLanguageModelProgress = progress
         }
 
-        // A stale "on" without the EOU model on disk (an older build, or EOU
-        // removed) gets turned off rather than silently pulling ~440MB.
+        // Smart Typing whose model was deleted outside Purr gets turned off
+        // rather than silently pulling ~440MB.
         if SettingsStore.shared.smartTyping, !ParakeetEngine.eouIsInstalled() {
             SettingsStore.shared.smartTyping = false
         }
-
-        // Off the main actor: the first launch after the Gemma 4 switch
-        // removes the 2.5 GB Gemma 3 file.
-        Task.detached(priority: .utility) { LLMModelManager.removeLegacyModels() }
 
         // The recorder self-skips warming on Bluetooth to avoid pinning SCO mode.
         recorder.allowsWarmKeeping = true

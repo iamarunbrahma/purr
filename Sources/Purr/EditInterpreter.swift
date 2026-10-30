@@ -14,8 +14,9 @@ import FoundationModels
 // the model returns full text.
 //
 // Both backends are asked for the same fenced text protocol; `parsePlan`
-// decodes it. Apple Foundation Models (macOS 26+) is preferred; Gemma 4 E2B via
-// llama.cpp is the macOS 14-25 path, sharing the summariser's weights.
+// decodes it. Apple Foundation Models (macOS 26+) is the default; Gemma 4 E2B
+// via llama.cpp runs when picked in Settings › Voice Edit and on macOS 14-25,
+// sharing the summariser's weights.
 @MainActor
 enum EditInterpreter {
     // Apple FM's 4096-token window is the tighter of the two backends; 4000
@@ -35,7 +36,7 @@ enum EditInterpreter {
         var errorDescription: String? {
             switch self {
             case .noBackend:
-                return "Voice Edit needs an AI model. Set it up in Settings → Features."
+                return "Voice Edit needs an AI model. Download Gemma in Settings → Voice Edit."
             case .selectionTooLong:
                 return "That selection is too long for Voice Edit. Select less text and try again."
             case .emptyInstruction:
@@ -44,7 +45,7 @@ enum EditInterpreter {
                 return "Couldn't apply that edit. Try rephrasing it."
             case .languageUnsupported:
                 return
-                    "Voice Edit isn't available in this language. Download Gemma in Settings → Features."
+                    "Voice Edit isn't available in this language. Switch to Gemma in Settings → Voice Edit."
             case .backend:
                 // Raw backend errors are too technical for the pill; the caller
                 // logs the underlying error.
@@ -67,10 +68,16 @@ enum EditInterpreter {
         return false
     }
 
+    // Gemma once it's picked and downloaded. Until it's downloaded, Apple's
+    // model keeps Voice Edit working, as MeetingSummarizer does for summaries.
+    private static var prefersGemma: Bool {
+        SettingsStore.shared.voiceEditBackend == .llamaCpp && LLMModelManager.isInstalled()
+    }
+
     // Called the moment the voice-edit hotkey is pressed so a cold Gemma load
     // overlaps with the user speaking instead of stalling the edit.
     static func warmUp() {
-        if appleFoundationReady {
+        if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
                 LanguageModelSession(instructions: systemPrompt).prewarm()
@@ -105,7 +112,7 @@ enum EditInterpreter {
     ) async throws
         -> VoiceEditPlan
     {
-        if appleFoundationReady {
+        if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
                 return try await interpretWithAppleFM(instruction: instruction, selection: selection)

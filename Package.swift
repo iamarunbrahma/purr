@@ -11,15 +11,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
-        // FluidAudio - Parakeet TDT v3 batch (multilingual, 10× faster than
-        // Whisper Large V3 on Apple Silicon) plus Parakeet EOU streaming
-        // (real-time chunked ASR with end-of-utterance detection).
+        // FluidAudio - Parakeet TDT v2 (English) and v3 (other meeting
+        // languages), Parakeet EOU streaming for Smart Typing, and the meeting
+        // speaker diarizer.
         //
-        // Pinned exactly. Package.resolved isn't committed, so a version range
-        // resolves to whatever is newest on every fresh clone, and FluidAudio
-        // has broken this build from inside one before: 0.15.5 removed the
-        // `DownloadUtils` namespace, and tag v0.15.8 is the "v0.16.0" release.
-        // Bump by hand after running the transcripts through both versions.
+        // Pinned exactly: FluidAudio has broken this build from inside a
+        // version range before. 0.15.5 removed the `DownloadUtils` namespace,
+        // and tag v0.15.8 is the "v0.16.0" release. Bump by hand after running
+        // the transcripts through both versions.
         //
         // `traits: []` leaves out the NeMo text normalizer, a ~9 MB Rust
         // library FluidAudio links by default for its TTS and inverse text
@@ -28,12 +27,11 @@ let package = Package(
             url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.7", traits: []),
     ],
     targets: [
-        // llama.cpp Apple XCFramework - powers Gemma 4 E2B meeting summaries
-        // on macOS 14-25 where Apple Foundation Models isn't available.
-        // Pinned to a specific upstream tag so the SHA256 is stable; bump by
-        // hand when picking up a new release (the framework ships ~200 MB
-        // zipped because it bundles every Apple platform slice, but only the
-        // macos-arm64 slice ends up in the final .app, ~30 MB).
+        // llama.cpp Apple XCFramework - runs Gemma 4 E2B for meeting summaries
+        // and Voice Edit. Pinned to a specific upstream tag so the SHA256 is
+        // stable; bump by hand when picking up a new release (the framework
+        // ships ~200 MB zipped because it bundles every Apple platform slice,
+        // but only the macos-arm64 slice ends up in the final .app, ~30 MB).
         .binaryTarget(
             name: "llama",
             url: "https://github.com/ggml-org/llama.cpp/releases/download/b9106/llama-b9106-xcframework.zip",

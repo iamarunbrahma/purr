@@ -1,47 +1,45 @@
 <div align="center">
 
-<img src="Resources/purr_app_logo.png" alt="Purr" width="180" height="180">
+<img src="Resources/purr_app_logo.png" alt="Purr" width="160" height="160">
 
 # Purr
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-orange)](#)
-[![Swift 6.2+](https://img.shields.io/badge/Swift-6.2%2B-orange?logo=swift)](#)
-[![Engine: Parakeet TDT v2](https://img.shields.io/badge/Engine-Parakeet%20TDT%20v2-purple)](#)
+**Hold a key, speak, and your words appear in any app.**<br>
+Dictation, meeting notes and voice editing that run entirely on your Mac.
 
-### Hold a key. Speak. Your words type into any text field - 100% local, on-device.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#requirements)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-orange)](#requirements)
 
 </div>
 
-Local voice-to-text dictation for macOS Apple Silicon. A free, MIT-licensed alternative to paid commercial dictation apps, with no telemetry and no cloud round-trips.
+## Features
+
+- **Dictate** into any text field. Hold a key, talk, let go.
+- **Smart Typing** types as you speak instead of waiting for you to let go.
+- **Meetings** records your mic and the call, labels who said what, and saves Markdown notes with an optional summary.
+- **Voice Edit** rewrites selected text when you say what to change.
+- **Languages**: English by default, about 100 for dictation with Whisper, and 28 for meetings.
+- **Voice commands** for punctuation, new lines and "scratch that", plus your own.
+- **Vocabulary** fixes the names and acronyms it mishears, and drops "um" and "uh".
+- **Private**: no account, no cloud, no telemetry.
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="Resources/screenshots/onboarding.png" alt="Onboarding and permissions"><br>
-      <sub>Onboarding &amp; permissions</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="Resources/screenshots/general-settings.png" alt="General settings"><br>
-      <sub>General settings</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="Resources/screenshots/features-settings.png" alt="Features settings"><br>
-      <sub>Features settings</sub>
-    </td>
-    <td align="center">
-      <img src="Resources/screenshots/customization-settings.png" alt="Customization settings"><br>
-      <sub>Customization settings</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="Resources/screenshots/setup-engine.png" width="49%" alt="Setup: choosing Parakeet or Whisper">
+  <img src="Resources/screenshots/setup-permissions.png" width="49%" alt="Setup: Microphone, Accessibility and System Audio access">
+  <img src="Resources/screenshots/settings-general.png" width="49%" alt="General settings">
+  <img src="Resources/screenshots/settings-meetings.png" width="49%" alt="Meetings settings">
+  <img src="Resources/screenshots/settings-vocabulary.png" width="49%" alt="Vocabulary settings">
+  <img src="Resources/screenshots/settings-models.png" width="49%" alt="Models settings">
+</p>
 
-## QuickStart
+## Install
+
+Download `Purr.dmg` from the [latest release](https://github.com/iamarunbrahma/purr/releases/latest), open it and drag Purr into Applications.
+
+Or build it from source (needs Xcode):
 
 ```bash
 git clone https://github.com/iamarunbrahma/purr.git
@@ -51,164 +49,93 @@ mv dist/Purr.app /Applications/
 open /Applications/Purr.app
 ```
 
-First launch:
-
-1. A short setup picks the speech engine, downloads its model (~450 MB for Parakeet), and asks for Microphone and Accessibility.
-2. Click into any text field, hold **Right Option**, speak, release.
+On first launch, a short setup picks the speech engine, downloads its model (about 450 MB for Parakeet) and asks for Microphone and Accessibility access. Then click into any text field, hold **Right Option**, speak and let go.
 
 ## Hot Keys
 
-| Action      | Default | Behavior                                       |
-| ----------- | ------- | ---------------------------------------------- |
-| Dictation   | hold ⌥  | Hold to talk, release to paste/type.           |
-| Meeting     | ⌃⌥ M    | Tap to start/stop. Captures mic + system audio. |
-| Voice edit  | ⌃⌥ E    | Select text, hold, speak the edit, release.    |
+| Mode       | Default      | Behavior                                           |
+| ---------- | ------------ | -------------------------------------------------- |
+| Dictate    | hold right ⌥ | Hold to talk, release to type.                     |
+| Meeting    | ⌃⌥ M         | Tap to start and stop. Records mic + system audio. |
+| Voice Edit | ⌃⌥ E         | Select text, hold, say the change, release.        |
 
-While a meeting is recording, the dictation hotkey is suspended so a reflexive press won't spray a transcript over your notes. Each hotkey can be switched between a few built-in presets in Settings.
+Meeting and Voice Edit are off until you turn them on in Settings. Each mode has a few other keys to pick from, and Dictate can also start and stop with a tap.
 
-**In-speech voice commands:** "new paragraph", "comma", "period", "question mark", "exclamation mark", "scratch that".
+While dictating, say "comma", "period", "question mark", "new line", "new paragraph" or "scratch that". Add your own commands in **Settings > Vocabulary**.
 
-**Voice-edit phrases:** "change X to Y", "replace X with Y", "delete X", "add Y at the end", "prepend Y", "capitalize", "lowercase", "uppercase". Anything else replaces the selection wholesale.
+## Requirements
 
-## Features
+- An Apple Silicon Mac with macOS 14 or later.
+- macOS 14.2 or later to record the other people on a call.
+- For summaries and Voice Edit, Apple Intelligence on macOS 26, or Gemma 4 E2B (a 3.35 GB download) on any version.
 
-- **Two transcription engines**: Parakeet TDT v2 (default) is English-only, on-device, and the fastest option on Apple Silicon. Switch to WhisperKit (Whisper Tiny EN through Large V3 Turbo) when you need another language.
-- **Smart Typing**: With Parakeet, words appear live in the focused app as you speak instead of only landing on key release. Each phrase stays separately undoable and coexists cleanly with autocorrect and IMEs.
-- **Meeting mode**: Captures your mic and your Mac's system audio together, so everyone on a call is transcribed. Echo cancellation and offline speaker diarization (FluidAudio) label each voice, and transcripts save as Markdown to a folder you choose.
-- **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 4 E2B locally on older systems.
-- **Voice editing**: Select text, hold the voice-edit hotkey, and speak the change. A parser handles "change X to Y", "delete X", "capitalize", and more; anything else replaces the selection wholesale.
-- **In-speech voice commands**: Punctuate, break paragraphs, and undo hands-free by saying "comma", "period", "new paragraph", or "scratch that" as you dictate. Add your own in Settings.
-- **Custom dictionary**: Teach Purr the proper nouns and acronyms it keeps mishearing - map "fluid audio" to "FluidAudio" or "ts" to "TypeScript".
-- **Filler trimming**: "um", "uh", and "er" are stripped automatically; add your own filler words in Settings.
-- **Flexible hotkeys**: Pick each feature's trigger from a few built-in presets - a bare modifier, a modifier combo, or a function key.
-- **Native and private**: Pure Swift and SwiftUI (no Electron, no Tauri), with everything running on-device and zero telemetry.
-
-## Compatibility
-
-| Platform                                       | Status                                                       |
-| ---------------------------------------------- | ------------------------------------------------------------ |
-| macOS 14+ on Apple Silicon (M1, M2, M3, M4)    | Supported                                                    |
-| macOS 14+ on Intel                             | Not supported (Apple Silicon only - CoreML / ANE)            |
-| macOS 13 or earlier                            | Not supported (uses Sonoma+ APIs)                            |
-| Windows                                        | Not planned (CGEventTap, Accessibility, ANE are Apple-only)  |
-| Linux                                          | Not planned                                                  |
-| iOS / iPadOS                                   | Not planned (designed as a menu bar app)                     |
-
-## FAQs
+## FAQ
 
 <details>
-<summary><strong>Does my audio leave my Mac?</strong></summary>
+<summary><strong>Does anything leave my Mac?</strong></summary>
 
-No. Recording, transcription, and post-processing all happen on-device (transcription runs on the Apple Neural Engine). Zero telemetry, and zero network calls after the initial model download.
+No. Recording, transcription, summaries and Voice Edit all run on your Mac. Purr only goes online to download models and, when you open About, to check GitHub for a new version. Once the models are downloaded, it works offline.
 
 </details>
 
 <details>
-<summary><strong>Which mode is lowest-latency?</strong></summary>
+<summary><strong>Which languages does it support?</strong></summary>
 
-Parakeet (the default) with Smart Typing on, so words appear as you speak instead of on key release. Whisper can't match it because it's non-streaming.
-
-</details>
-
-<details>
-<summary><strong>What languages can I dictate in?</strong></summary>
-
-English with the default Parakeet engine. For other languages, switch to WhisperKit in Settings > Engine - it transcribes ~100 languages (auto-detected or pinned) and can optionally translate them to English.
+Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** for about 100 other languages, and optionally translate them into English. Meetings work in English and 27 more languages (pick one in **Settings > Meetings**), and the summary is written in the meeting's language.
 
 </details>
 
 <details>
 <summary><strong>Does meeting mode record the other people on my call?</strong></summary>
 
-Yes - it captures your mic and your Mac's system audio together, so remote participants are transcribed too, still entirely on-device. System-audio capture needs macOS 14.2+; older systems record the mic only.
+Yes. It records your mic and your Mac's audio output together, so remote voices are transcribed too. On macOS 14.0 and 14.1, only your mic is recorded.
 
 </details>
 
 <details>
-<summary><strong>The mic icon isn't visible in my menu bar.</strong></summary>
+<summary><strong>I can't see the icon in the menu bar.</strong></summary>
 
-On notched MacBooks the icon hides behind the notch when the menu bar is crowded. Hold Command and drag to reorder, quit a few menu bar apps, or use [Ice](https://github.com/jordanbaird/Ice) / Bartender to manage overflow.
-
-</details>
-
-<details>
-<summary><strong>How big is the model download?</strong></summary>
-
-Parakeet TDT v2 is ~450 MB, fetched automatically on first launch. Whisper models range from ~140 MB (Tiny) to ~616 MB (Large V3 Turbo) if you switch engines.
-
-</details>
-
-<details>
-<summary><strong>Does it work without internet?</strong></summary>
-
-Yes, after the first model download. Everything runs on-device.
-
-</details>
-
-<details>
-<summary><strong>Can I change the hotkey?</strong></summary>
-
-Yes - pick from a few built-in presets per feature in Settings (e.g. Right Option, F5, or ⌃⌥ Space for dictation). There's no custom recorder yet, so keys outside the presets can't be assigned.
-
-</details>
-
-<details>
-<summary><strong>Can I use it in any app?</strong></summary>
-
-Any standard text field. Voice editing works in Accessibility-supported fields (most native macOS apps); other apps fall back to paste injection.
+On MacBooks with a notch, menu bar icons can hide behind it when the bar is full. Quit a few menu bar apps, hold ⌘ and drag icons to make room, or use [Ice](https://github.com/jordanbaird/Ice).
 
 </details>
 
 <details>
 <summary><strong>How do I update Purr?</strong></summary>
 
-Open the menu bar > About Purr and it checks GitHub Releases each time it opens. A new version downloads, verifies its checksum, and relaunches in place.
+Open **About Purr** from the menu bar. It checks GitHub Releases each time it opens, and installs a new version after verifying its SHA-256.
 
 </details>
 
 <details>
-<summary><strong>Why was I asked to grant permissions again after an update?</strong></summary>
+<summary><strong>How do I remove the models or uninstall Purr?</strong></summary>
 
-Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…
+**Settings > Models > Delete All** removes every downloaded model and keeps your meetings and settings. Models download again when a feature needs them.
 
-</details>
+**Settings > General > Uninstall** moves Purr, its models and your meetings to the Trash, removes its settings, caches and permissions, and quits.
 
-<details>
-<summary><strong>How do I delete the models or fully uninstall Purr?</strong></summary>
-
-To reclaim disk space without uninstalling, open **Settings > Models** and click **Delete All…**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
-
-To uninstall completely, open **Settings > General** and click **Uninstall…**. Purr moves itself, its models and your meetings to the Trash, deletes its preferences and caches, resets its permissions, and quits.
-
-Already dragged Purr to the Trash? Put it back, open it and click **Uninstall…**, or remove what it left yourself:
+If you already dragged Purr to the Trash, put it back and use Uninstall, or remove the rest yourself:
 
 ```bash
-rm -rf ~/Library/Application\ Support/Purr     # models + meetings
+rm -rf ~/Library/Application\ Support/Purr     # models and meetings
 rm -rf ~/Library/Caches/com.arunbrahma.purr   # caches
-defaults delete com.arunbrahma.purr           # preferences
+defaults delete com.arunbrahma.purr           # settings
 ```
-
-Older versions also kept Whisper files in `~/Documents/huggingface`. Delete that folder too if no other app uses it.
 
 </details>
 
 ## License
 
-Purr itself is MIT-licensed. Copyright (c) 2026 Arun Brahma. See [LICENSE](LICENSE).
+Purr is MIT licensed. Copyright (c) 2026 Arun Brahma. See [LICENSE](LICENSE).
 
-### Third-party licenses
+Models download on first use, are never bundled, and keep their own licenses:
 
-Purr builds on open-source work in two categories, handled differently.
+- **Parakeet TDT v2 and v3** (NVIDIA, via FluidAudio): CC-BY-4.0
+- **Whisper** (OpenAI, via WhisperKit): MIT
+- **Gemma 4 E2B** (Google): [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 
-**Model weights** download on first use and are never redistributed by Purr; each carries its own terms:
+Bundled code:
 
-- **Parakeet TDT v2** (NVIDIA, run via FluidAudio) - CC-BY-4.0. Powers the default English dictation, voice editing, and meeting transcription.
-- **Whisper** (OpenAI, via WhisperKit) - MIT. Optional engine for other languages.
-- **Gemma 4 E2B Instruct** (Google) - [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0). Used for meeting summaries and Voice Edit.
-
-**Bundled code** is compiled or linked into the app:
-
-- **WhisperKit** (Argmax) - MIT.
-- **FluidAudio** (FluidInference) - Apache-2.0. Runs Parakeet transcription and the meeting-mode speaker diarization model.
-- **llama.cpp** (ggml-org) - MIT, embedded as an Apple XCFramework; runs the Gemma summaries.
-- **SpeexDSP** (Xiph.Org) - BSD-3-Clause, vendored from source for meeting echo cancellation.
+- **WhisperKit** (Argmax): MIT
+- **FluidAudio** (FluidInference): Apache-2.0
+- **llama.cpp** (ggml-org): MIT
+- **SpeexDSP** (Xiph.Org): BSD-3-Clause, for echo cancellation in meetings

@@ -3,7 +3,7 @@ import WhisperKit
 import os.log
 
 // Owns model files on disk. WhisperKit can download to its own cache, but we route
-// everything through ~/Library/Application Support/Purr/models so users can find and
+// everything through ~/Library/Application Support/Purr/Models so users can find and
 // delete models without spelunking ~/Library/Caches, and so the location survives
 // `defaults delete` and Xcode-cache cleaning.
 enum ModelManager {
@@ -80,7 +80,7 @@ enum ModelManager {
     static var modelsDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
-        let dir = support.appendingPathComponent("Purr/models", isDirectory: true)
+        let dir = support.appendingPathComponent("Purr/Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -138,7 +138,7 @@ enum ModelManager {
         return total
     }
 
-    // Downloads into a staging folder under models/ and moves the finished
+    // Downloads into a staging folder under Models/ and moves the finished
     // model into place, so a half-downloaded model never looks installed and
     // nothing lands in WhisperKit's default ~/Documents/huggingface. Progress
     // is the staged bytes against the variant's size: WhisperKit's own

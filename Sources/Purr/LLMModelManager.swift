@@ -6,7 +6,7 @@ import os.log
 // MeetingSummarizer's llama.cpp backend.
 //
 // The single quantized GGUF (Q4_0, ~3.35 GB) is downloaded from Hugging Face
-// to ~/Library/Application Support/Purr/models/ alongside the Parakeet /
+// to ~/Library/Application Support/Purr/Models/ alongside the Parakeet /
 // Whisper weights, so models are findable in one place and survive
 // `defaults delete`.
 //
@@ -32,19 +32,14 @@ enum LLMModelManager {
         "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
     static let defaultModelExpectedSize: Int64 = 3_349_516_256
 
-    // Gemma 3 4B, downloaded by earlier releases. Nothing loads it any more.
-    private static let legacyModelFilenames = ["gemma-3-4b-it-Q4_K_M.gguf"]
-
-    static var modelsDirectory: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
-            0]
-        let dir = support.appendingPathComponent("Purr/models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
+    // What URLSession kept of a download that broke off partway (a minute with
+    // no data, a dropped connection), so Retry carries on from there instead
+    // of fetching all 3.35 GB again. Memory only: it points at a temp file
+    // URLSession owns. Settings runs one download at a time.
+    private static var resumeData: Data?
 
     static var localURL: URL {
-        modelsDirectory.appendingPathComponent(defaultModelFilename, isDirectory: false)
+        ModelManager.modelsDirectory.appendingPathComponent(defaultModelFilename, isDirectory: false)
     }
 
     static func isInstalled() -> Bool {
@@ -67,22 +62,6 @@ enum LLMModelManager {
         }
     }
 
-    // Run once at launch so an upgrade doesn't strand the old weights on disk.
-    static func removeLegacyModels() {
-        for name in legacyModelFilenames {
-            let url = modelsDirectory.appendingPathComponent(name, isDirectory: false)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            do {
-                try FileManager.default.removeItem(at: url)
-                log.info("Removed legacy model \(name, privacy: .public)")
-            } catch {
-                log.error(
-                    "Could not remove legacy model \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-            }
-        }
-    }
-
     // Streams the GGUF to disk. Uses a delegate rather than the higher-level
     // `URLSession.download(from:)` async API to get incremental progress for
     // the UI; cancellation stays at the caller's Task level.
@@ -95,12 +74,25 @@ enum LLMModelManager {
             try? FileManager.default.removeItem(at: destination)
         }
 
-        log.info("Downloading Gemma GGUF -> \(destination.path, privacy: .public)")
-        let downloader = GGUFDownloader()
-        let tempURL = try await downloader.download(
-            from: defaultModelURL,
-            progress: progress
+        log.info(
+            "\(resumeData == nil ? "Downloading" : "Resuming", privacy: .public) Gemma GGUF -> \(destination.path, privacy: .public)"
         )
+        let downloader = GGUFDownloader()
+        let tempURL: URL
+        do {
+            tempURL = try await downloader.download(
+                from: defaultModelURL,
+                resumeData: resumeData,
+                progress: progress
+            )
+            resumeData = nil
+        } catch {
+            resumeData = (error as? URLError)?.downloadTaskResumeData
+            log.error(
+                "Gemma download stopped (resumable: \(resumeData != nil, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
 
         // Verify BEFORE moving into place; a mismatched temp file is deleted so
         // the next retry restarts from scratch.
@@ -192,13 +184,13 @@ private final class GGUFDownloader: NSObject, URLSessionDownloadDelegate {
     // down on every completion path.
     private var session: URLSession?
 
-    func download(from url: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+    func download(from url: URL, resumeData: Data?, progress: @escaping (Double) -> Void) async throws -> URL {
         progressHandler = progress
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         self.session = session
         return try await withCheckedThrowingContinuation { (cc: CheckedContinuation<URL, Error>) in
             self.continuation = cc
-            let task = session.downloadTask(with: url)
+            let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url)
             task.resume()
         }
     }

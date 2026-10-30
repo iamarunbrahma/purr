@@ -1,10 +1,10 @@
 # Build a runnable Purr.app bundle from the SwiftPM executable.
 #
-# Why this Makefile exists: macOS gates the microphone, accessibility, and
-# input-monitoring permissions on a real .app bundle with a code signature
-# and an Info.plist. `swift run` ships a bare Mach-O without those, so TCC
-# silently denies everything. This Makefile assembles a minimal .app and
-# code-signs it so the OS will route TCC prompts to it.
+# Why this Makefile exists: macOS gates the microphone and accessibility
+# permissions on a real .app bundle with a code signature and an Info.plist.
+# `swift run` ships a bare Mach-O without those, so TCC silently denies
+# everything. This Makefile assembles a minimal .app and code-signs it so the
+# OS will route TCC prompts to it.
 
 APP_NAME      := Purr
 BUNDLE_ID     := com.arunbrahma.purr
@@ -17,8 +17,8 @@ DMG_STAGE     := dist/dmg-stage
 DMG_MNT       := dist/dmg-mnt
 DMG_BG        := Resources/dmg-launch-window.png
 # Pre-baked Finder window settings (window bounds, icon positions, background
-# picture pointer). Copied verbatim into every DMG so layout no longer depends
-# on osascript + Finder, which fails intermittently on macOS Sequoia/Tahoe
+# picture pointer). Copied verbatim into every DMG so the layout doesn't depend
+# on scripting Finder, which fails intermittently on macOS Sequoia/Tahoe
 # (TCC Automation prompts, AppleEvent timeouts, hdiutil-vs-Finder races - see
 # create-dmg/create-dmg issues #72, #154, #185).
 DMG_DS_STORE  := Resources/dmg-DS_Store
@@ -124,10 +124,7 @@ notarize-app: app
 # The DMG is laid out as a "drag to Applications" install window: a custom
 # background image with a curved arrow plus an Applications symlink. The
 # Finder window settings (icon positions + background picture) live in a
-# pre-baked .DS_Store (Resources/dmg-DS_Store) we copy in directly. That
-# replaces the old osascript+Finder dance which silently failed on macOS
-# Sequoia/Tahoe (TCC Automation, hdiutil-vs-Finder races) and shipped
-# DMGs without the custom window ~30% of the time.
+# pre-baked .DS_Store (Resources/dmg-DS_Store) we copy in directly.
 dmg: notarize-app
 	@rm -rf $(DMG) $(DMG_RW) $(DMG_STAGE)
 	@mkdir -p $(DMG_STAGE)/.background
