@@ -24,6 +24,41 @@ Dictation, meeting notes and voice editing that run entirely on your Mac.
 - **Vocabulary** fixes the names and acronyms it mishears, and drops "um" and "uh".
 - **Private**: no account, no cloud, no telemetry.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="Resources/screenshots/setup-engine.png" alt="Setup: choosing Parakeet or Whisper"><br>
+      <sub>Setup: choose a speech engine</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="Resources/screenshots/setup-permissions.png" alt="Setup: Microphone, Accessibility and System Audio access"><br>
+      <sub>Setup: allow access</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="Resources/screenshots/settings-general.png" alt="General settings"><br>
+      <sub>General</sub>
+    </td>
+    <td align="center">
+      <img src="Resources/screenshots/settings-meetings.png" alt="Meetings settings"><br>
+      <sub>Meetings</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="Resources/screenshots/settings-vocabulary.png" alt="Vocabulary settings"><br>
+      <sub>Vocabulary</sub>
+    </td>
+    <td align="center">
+      <img src="Resources/screenshots/settings-models.png" alt="Models settings"><br>
+      <sub>Models</sub>
+    </td>
+  </tr>
+</table>
+
 ## Install
 
 Download `Purr.dmg` from the [latest release](https://github.com/iamarunbrahma/purr/releases/latest), open it and drag Purr into Applications.
