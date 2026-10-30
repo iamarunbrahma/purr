@@ -152,14 +152,14 @@ private struct GeneralPane: View {
 
             Section {
                 LabeledContent("Reset all settings") {
-                    Button("Reset…") { confirmingReset = true }
+                    Button("Reset") { confirmingReset = true }
                 }
                 .help("Restores every preference. Downloaded models stay on this Mac.")
                 LabeledContent {
                     if isUninstalling {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Uninstall…", role: .destructive) {
+                        Button("Uninstall", role: .destructive) {
                             uninstallSummary = makeUninstallSummary()
                             confirmingUninstall = true
                         }
@@ -503,7 +503,7 @@ private struct MeetingsFolderRow: View {
                     .buttonStyle(.borderless)
                     .help("Use the default folder")
                 }
-                Button("Choose…") { MeetingsFolder.choose() }
+                Button("Choose") { MeetingsFolder.choose() }
             }
         }
     }
@@ -580,22 +580,38 @@ private struct VoiceEditPane: View {
                         onChange: { coordinator.reinstallHotkey() }
                     )
                 }
-                LabeledContent("Model", value: modelName)
-                    .help("Edits are understood by an AI model running on this Mac.")
+                if models.appleIntelligenceAvailable {
+                    Picker("Model", selection: $settings.voiceEditBackend) {
+                        Text("Apple Intelligence").tag(SettingsStore.SummaryBackend.appleFoundation)
+                        Text(ModelKind.gemma.title).tag(SettingsStore.SummaryBackend.llamaCpp)
+                    }
+                    .help("Apple's model is built into macOS. Gemma is a 3.35 GB download that covers more languages.")
+                } else {
+                    LabeledContent("Model", value: modelName)
+                        .help("Edits are understood by an AI model running on this Mac.")
+                }
                 // One Gemma for summaries and edits - ModelStore runs a single
                 // download whichever row starts it.
-                if !models.appleIntelligenceAvailable, models[.gemma].needsAttention {
+                if showsGemmaDownload {
                     ModelRow(kind: .gemma, models: models)
+                }
+            } footer: {
+                if showsGemmaDownload {
+                    GemmaLicenseNote()
                 }
             }
         }
         .formStyle(.grouped)
     }
 
-    // Matches EditInterpreter: Apple's model when it's available, else Gemma.
+    // Matches EditInterpreter: without Apple Intelligence, Gemma once it's downloaded.
     private var modelName: String {
-        if models.appleIntelligenceAvailable { return "Apple Intelligence" }
-        return models[.gemma].isOnDisk ? ModelKind.gemma.title : "None"
+        models[.gemma].isOnDisk ? ModelKind.gemma.title : "None"
+    }
+
+    private var showsGemmaDownload: Bool {
+        (!models.appleIntelligenceAvailable || settings.voiceEditBackend == .llamaCpp)
+            && models[.gemma].needsAttention
     }
 }
 
@@ -761,7 +777,7 @@ private struct ModelsPane: View {
                     if isDeletingAll {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Delete All…", role: .destructive) { confirmingDeleteAll = true }
+                        Button("Delete All", role: .destructive) { confirmingDeleteAll = true }
                             .disabled(models.isDownloading || models.totalBytesOnDisk == 0)
                     }
                 } label: {

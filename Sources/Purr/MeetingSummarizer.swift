@@ -42,7 +42,7 @@ final class MeetingSummarizer {
             case .emptyResponse: return "Summarization model returned no text."
             case .unsupportedLocale:
                 return
-                    "Apple Foundation Model doesn't support this device's language. Switch to Gemma in Settings → Features."
+                    "Apple Foundation Model doesn't support this device's language. Switch to Gemma in Settings → Meetings."
             case .contentFlagged(let reason):
                 return "On-device safety guardrails blocked the summary: \(reason)."
             case .generationFailed(let underlying):

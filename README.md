@@ -169,18 +169,18 @@ Open the menu bar > About Purr and it checks GitHub Releases each time it opens.
 <details>
 <summary><strong>Why was I asked to grant permissions again after an update?</strong></summary>
 
-Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…
+Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed
 
 </details>
 
 <details>
 <summary><strong>How do I delete the models or fully uninstall Purr?</strong></summary>
 
-To reclaim disk space without uninstalling, open **Settings > Models** and click **Delete All…**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
+To reclaim disk space without uninstalling, open **Settings > Models** and click **Delete All**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
 
-To uninstall completely, open **Settings > General** and click **Uninstall…**. Purr moves itself, its models and your meetings to the Trash, deletes its preferences and caches, resets its permissions, and quits.
+To uninstall completely, open **Settings > General** and click **Uninstall**. Purr moves itself, its models and your meetings to the Trash, deletes its preferences and caches, resets its permissions, and quits.
 
-Already dragged Purr to the Trash? Put it back, open it and click **Uninstall…**, or remove what it left yourself:
+Already dragged Purr to the Trash? Put it back, open it and click **Uninstall**, or remove what it left yourself:
 
 ```bash
 rm -rf ~/Library/Application\ Support/Purr     # models + meetings

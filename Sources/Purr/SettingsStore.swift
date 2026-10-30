@@ -35,14 +35,16 @@ final class SettingsStore: ObservableObject {
         static let trimFillers = "post.trimFillers"
         static let summarizeMeetings = "feature.summarizeMeetings"
         static let summaryBackend = "feature.summaryBackend"
+        static let voiceEditBackend = "feature.voiceEditBackend"
         static let meetingsFolderPath = "meetings.folderPath"
         static let systemAudioNoticeShown = "meetings.systemAudioNoticeShown"
         static let meetingLanguage = "meetings.language"
         static let saveMeetingAudio = "meetings.saveAudio"
     }
 
-    // Which on-device LLM produces the meeting summary. Apple FM is the
-    // default on macOS 26+; older systems coerce to .llamaCpp at use time.
+    // Which on-device LLM writes meeting summaries and, separately, reads
+    // Voice Edit instructions. Apple FM is the default on macOS 26+; older
+    // systems coerce to .llamaCpp at use time.
     enum SummaryBackend: String, Codable, CaseIterable, Identifiable {
         case appleFoundation
         case llamaCpp
@@ -173,6 +175,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(summaryBackend.rawValue, forKey: Keys.summaryBackend) }
     }
 
+    @Published var voiceEditBackend: SummaryBackend {
+        didSet { defaults.set(voiceEditBackend.rawValue, forKey: Keys.voiceEditBackend) }
+    }
+
     // Empty = unset, resolves to `defaultMeetingsDirectory` (no TCC consent
     // needed). A non-empty user-chosen path that becomes unwritable falls
     // back to the default in MeetingDocument, so a transcript is never lost.
@@ -243,6 +249,9 @@ final class SettingsStore: ObservableObject {
         let storedBackend =
             defaults.string(forKey: Keys.summaryBackend) ?? SummaryBackend.appleFoundation.rawValue
         self.summaryBackend = SummaryBackend(rawValue: storedBackend) ?? .appleFoundation
+        let storedEditBackend =
+            defaults.string(forKey: Keys.voiceEditBackend) ?? SummaryBackend.appleFoundation.rawValue
+        self.voiceEditBackend = SummaryBackend(rawValue: storedEditBackend) ?? .appleFoundation
         self.meetingsFolderPath = defaults.string(forKey: Keys.meetingsFolderPath) ?? ""
         if let data = defaults.data(forKey: Keys.dictionary),
             let entries = try? JSONDecoder().decode([DictionaryEntry].self, from: data)
@@ -326,6 +335,7 @@ final class SettingsStore: ObservableObject {
         trimFillers = true
         summarizeMeetings = false
         summaryBackend = .appleFoundation
+        voiceEditBackend = .appleFoundation
         meetingsFolderPath = ""
         dictionary = []
         customVoiceCommands = []

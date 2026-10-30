@@ -76,7 +76,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(item)
         }
 
-        permissionsItem.title = "Permissions Needed…"
+        permissionsItem.title = "Permissions Needed"
         permissionsItem.action = #selector(triggerPermissions)
         permissionsItem.image = NSImage(
             systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
