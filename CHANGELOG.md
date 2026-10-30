@@ -17,7 +17,13 @@
 - Fixed Smart Typing sometimes dropping a sentence.
 - Fixed the first dictation after launch waiting about 2 seconds for the mic.
 - Fixed the menu bar icon sometimes not showing up.
+- Fixed "new line" and "new paragraph" leaving a stray comma, and "colon" leaving a space before the mark.
+- Fixed "tab key" typing a space instead of a tab.
+- Fixed dictation starting in lowercase after a filler word like "um" or after "new paragraph".
+- Fixed made-up "You" lines in meetings when your mic is muted.
 - Dictation recovers instead of staying stuck on "Transcribing" when Core ML stalls.
+- A Whisper model loads as soon as it downloads, so the first dictation doesn't wait for it.
+- A Gemma download that breaks off picks up where it stopped when you retry.
 - Whisper's tokenizer is stored with its model instead of in ~/Documents/huggingface.
 
 ## 0.0.1 - 2026-06-15

@@ -15,11 +15,10 @@ let package = Package(
         // Whisper Large V3 on Apple Silicon) plus Parakeet EOU streaming
         // (real-time chunked ASR with end-of-utterance detection).
         //
-        // Pinned exactly. Package.resolved isn't committed, so a version range
-        // resolves to whatever is newest on every fresh clone, and FluidAudio
-        // has broken this build from inside one before: 0.15.5 removed the
-        // `DownloadUtils` namespace, and tag v0.15.8 is the "v0.16.0" release.
-        // Bump by hand after running the transcripts through both versions.
+        // Pinned exactly: FluidAudio has broken this build from inside a
+        // version range before. 0.15.5 removed the `DownloadUtils` namespace,
+        // and tag v0.15.8 is the "v0.16.0" release. Bump by hand after running
+        // the transcripts through both versions.
         //
         // `traits: []` leaves out the NeMo text normalizer, a ~9 MB Rust
         // library FluidAudio links by default for its TTS and inverse text
