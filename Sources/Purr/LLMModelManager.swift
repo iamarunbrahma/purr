@@ -6,7 +6,7 @@ import os.log
 // MeetingSummarizer's llama.cpp backend.
 //
 // The single quantized GGUF (Q4_0, ~3.35 GB) is downloaded from Hugging Face
-// to ~/Library/Application Support/Purr/models/ alongside the Parakeet /
+// to ~/Library/Application Support/Purr/Models/ alongside the Parakeet /
 // Whisper weights, so models are findable in one place and survive
 // `defaults delete`.
 //
@@ -41,16 +41,8 @@ enum LLMModelManager {
     // URLSession owns. Settings runs one download at a time.
     private static var resumeData: Data?
 
-    static var modelsDirectory: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
-            0]
-        let dir = support.appendingPathComponent("Purr/models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
     static var localURL: URL {
-        modelsDirectory.appendingPathComponent(defaultModelFilename, isDirectory: false)
+        ModelManager.modelsDirectory.appendingPathComponent(defaultModelFilename, isDirectory: false)
     }
 
     static func isInstalled() -> Bool {
@@ -76,7 +68,7 @@ enum LLMModelManager {
     // Run once at launch so an upgrade doesn't strand the old weights on disk.
     static func removeLegacyModels() {
         for name in legacyModelFilenames {
-            let url = modelsDirectory.appendingPathComponent(name, isDirectory: false)
+            let url = ModelManager.modelsDirectory.appendingPathComponent(name, isDirectory: false)
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
                 try FileManager.default.removeItem(at: url)
