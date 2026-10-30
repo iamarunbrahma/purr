@@ -35,6 +35,12 @@ enum LLMModelManager {
     // Gemma 3 4B, downloaded by earlier releases. Nothing loads it any more.
     private static let legacyModelFilenames = ["gemma-3-4b-it-Q4_K_M.gguf"]
 
+    // What URLSession kept of a download that broke off partway (a minute with
+    // no data, a dropped connection), so Retry carries on from there instead
+    // of fetching all 3.35 GB again. Memory only: it points at a temp file
+    // URLSession owns. Settings runs one download at a time.
+    private static var resumeData: Data?
+
     static var modelsDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
@@ -95,12 +101,25 @@ enum LLMModelManager {
             try? FileManager.default.removeItem(at: destination)
         }
 
-        log.info("Downloading Gemma GGUF -> \(destination.path, privacy: .public)")
-        let downloader = GGUFDownloader()
-        let tempURL = try await downloader.download(
-            from: defaultModelURL,
-            progress: progress
+        log.info(
+            "\(resumeData == nil ? "Downloading" : "Resuming", privacy: .public) Gemma GGUF -> \(destination.path, privacy: .public)"
         )
+        let downloader = GGUFDownloader()
+        let tempURL: URL
+        do {
+            tempURL = try await downloader.download(
+                from: defaultModelURL,
+                resumeData: resumeData,
+                progress: progress
+            )
+            resumeData = nil
+        } catch {
+            resumeData = (error as? URLError)?.downloadTaskResumeData
+            log.error(
+                "Gemma download stopped (resumable: \(resumeData != nil, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
 
         // Verify BEFORE moving into place; a mismatched temp file is deleted so
         // the next retry restarts from scratch.
@@ -192,13 +211,13 @@ private final class GGUFDownloader: NSObject, URLSessionDownloadDelegate {
     // down on every completion path.
     private var session: URLSession?
 
-    func download(from url: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+    func download(from url: URL, resumeData: Data?, progress: @escaping (Double) -> Void) async throws -> URL {
         progressHandler = progress
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         self.session = session
         return try await withCheckedThrowingContinuation { (cc: CheckedContinuation<URL, Error>) in
             self.continuation = cc
-            let task = session.downloadTask(with: url)
+            let task = resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url)
             task.resume()
         }
     }
