@@ -24,7 +24,7 @@ let package = Package(
         // library FluidAudio links by default for its TTS and inverse text
         // normalization, neither of which Purr uses.
         .package(
-            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.7", traits: []),
+            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.7", traits: []),
     ],
     targets: [
         // llama.cpp Apple XCFramework - runs Gemma 4 E2B for meeting summaries
