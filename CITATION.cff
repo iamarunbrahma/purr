@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Brahma"
+  given-names: "Arun"
+title: "Purr: Local, on-device dictation and meeting notes for macOS"
+date-released: 2026-06-15
+url: "https://github.com/iamarunbrahma/purr"
