@@ -294,8 +294,8 @@ final class ModelStore: ObservableObject {
                     self?.advance(kind, to: ModelDownloadProgress(stage: .downloading, fraction: fraction))
                 }
             }
-            // Picking the model warmed the engine before its files landed, which
-            // failed soft. Load it now, so the first dictation doesn't wait on it.
+            // Picking a model warms the engine before its files exist, which
+            // fails quietly. Load it now, so the first dictation doesn't wait.
             let settings = SettingsStore.shared
             if settings.engine == .whisper, settings.modelName == name {
                 coordinator.reloadEngine()

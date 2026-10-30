@@ -542,9 +542,8 @@ final class MeetingSummarizer {
         return roster.contains { $0.hasPrefix("Speaker ") } ? roster : []
     }
 
-    // The meeting language's name, or nil for English. The prompts are in
-    // English, so without it a Spanish meeting gets English minutes. The
-    // headings stay in English, like the rest of Purr.
+    // The meeting language's name, or nil for English. The minutes are
+    // written in it; the headings stay in English, like the rest of Purr.
     private static var summaryLanguage: String? {
         let language = ParakeetLanguage.named(SettingsStore.shared.meetingLanguage)
         return language.code.isEmpty ? nil : language.name

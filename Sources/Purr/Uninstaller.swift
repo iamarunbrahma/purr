@@ -1,7 +1,7 @@
 import Foundation
 import os.log
 
-// Settings › General › Uninstall Purr…: removes what Purr put on this Mac.
+// Settings › General › Uninstall Purr: removes what Purr put on this Mac.
 // Models, meetings and the app go to the Trash, so a slip can be undone until
 // it's emptied. Permissions are reset while the app is still in place. Settings
 // and caches are deleted outright, by a helper that runs once Purr has quit so

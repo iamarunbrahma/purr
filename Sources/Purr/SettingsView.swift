@@ -200,7 +200,7 @@ private struct GeneralPane: View {
         }
     }
 
-    // Built when Uninstall… is clicked, not in the dialog: its message is
+    // Built when Uninstall is clicked, not in the dialog: its message is
     // built on every render of this pane, and this lists the meeting folders.
     private func makeUninstallSummary() -> String {
         let movesApp = Uninstaller.canMoveApp

@@ -38,7 +38,5 @@
     <string>Purr records your voice locally to transcribe it into text. Audio never leaves your Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Purr captures system audio so meeting recordings include the remote participants. Audio is transcribed locally and never leaves your Mac.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Purr does not script other apps. This entry is reserved for future voice-command integrations and is unused today.</string>
 </dict>
 </plist>

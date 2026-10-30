@@ -275,7 +275,7 @@ final class AudioRecorder: @unchecked Sendable {
         }
 
         // Enable input (element 1), disable output (element 0). Disabling output also
-        // sidesteps the Bluetooth aggregate output-probe crash the old engine hit.
+        // sidesteps the Bluetooth aggregate output-probe crash AVAudioEngine hits.
         var enable: UInt32 = 1
         try check(
             AudioUnitSetProperty(
