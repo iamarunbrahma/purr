@@ -15,7 +15,7 @@ Dictation, meeting notes and voice editing that run entirely on your Mac.
 
 ## Video Demo
 
-https://github.com/user-attachments/assets/ca978796-ed64-484e-aafb-b2d116980e76
+https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
 
 ## Features
 
