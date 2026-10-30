@@ -191,7 +191,9 @@ enum MeetingDocument {
     // echo residue is left far quieter. The user's level is the median of
     // the words said while nothing was playing (system audio under
     // `nothingPlayingDecibels`), which echo can't be among; with none, every
-    // word that lost that much goes.
+    // word that lost that much goes. A word cancelling made that much louder
+    // goes the same way: over a muted or silent mic, all that's left is the
+    // canceller's guess at the echo, and Parakeet still hears words in it.
     private static let echoWindowSeconds = 0.5
     private static let echoRunWords = 3
     private static let echoMishearingWords = 2
@@ -258,7 +260,7 @@ enum MeetingDocument {
                 .map { spans[$0].level }.sorted()
             let ownLevel = own.isEmpty ? Double.infinity : own[own.count / 2]
             for i in local.indices
-            where !echo[i] && spans[i].removed >= echoCancelledDecibels
+            where !echo[i] && abs(spans[i].removed) >= echoCancelledDecibels
                 && spans[i].level < ownLevel - echoBelowOwnVoiceDecibels {
                 echo[i] = true
             }
