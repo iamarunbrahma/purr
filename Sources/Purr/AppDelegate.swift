@@ -42,6 +42,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Every quit lands here - the menu's Quit Purr, ⌘Q, the updater, logging
+    // out - so none can drop a recording unasked. A meeting lives only in
+    // memory until it's transcribed. Quit Anyway is the way out of a
+    // transcription that never finishes.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if coordinator == nil || coordinator.safeToQuit { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quit Purr?"
+        alert.informativeText = "Purr is still recording or transcribing. Quitting now loses that recording."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Quit Anyway")
+        // Bring Purr forward first - as a menu-bar accessory app, the alert
+        // would otherwise open behind whatever's frontmost.
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     private func showAbout() {
         Task { await updater.checkForUpdatesUnlessBusy() }
         if let win = aboutWindow {

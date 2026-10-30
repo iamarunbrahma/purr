@@ -80,7 +80,8 @@ final class AppCoordinator: ObservableObject {
     // Unlike the other two, this one never auto-downloads during warmup.
     @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
 
-    // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the glyph.
+    // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the
+    // glyph - and canQuitSafely().
     private var meetingActive = false
 
     // Mirrors voiceEditor.state from the emitted value, not read live: inside
@@ -481,13 +482,9 @@ final class AppCoordinator: ObservableObject {
         case .recording, .transcribing: return false
         case .idle, .error: break
         }
-        if let meeting = meeting {
-            switch meeting.state {
-            case .recording, .processing: return false
-            case .idle, .error: break
-            }
-        }
-        return true
+        // Not meeting.state: the meeting observer calls this before that
+        // changes, so it would still hold the previous state.
+        return !meetingActive
     }
 
     private func refreshSafeToQuit() {
