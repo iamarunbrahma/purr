@@ -1,7 +1,9 @@
 name: Claude review
 
-# Reviews pull requests from outside contributors. The maintainer's own PRs,
-# bots and drafts are skipped.
+# Reviews a pull request when the repo owner adds the claude-review label.
+# A label added by anyone else, the PR's author included, does nothing, and
+# new commits don't start a review. To review again, remove the label and add
+# it back.
 #
 # pull_request_target runs with this repo's secrets, so nothing here may run
 # the PR's code or give Claude a way into the runner. actions/checkout takes
@@ -15,20 +17,20 @@ name: Claude review
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [labeled]
 
 permissions: {}
 
+# Keyed on the label too, so adding another label mid-review doesn't cancel it.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  group: claude-review-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   review:
     if: >-
-      github.event.pull_request.user.login != 'iamarunbrahma' &&
-      github.event.pull_request.user.type != 'Bot' &&
-      !github.event.pull_request.draft
+      github.event.label.name == 'claude-review' &&
+      github.event.sender.login == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -74,10 +76,6 @@ jobs:
           # Claude can't read: it has no shell or file tools here.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Outside contributors don't have write access, which the action
-          # requires by default. With this set, it also strips secrets from
-          # the environment of every command Claude runs.
-          allowed_non_write_users: "*"
           prompt: |
             You're reviewing pull request #${{ github.event.pull_request.number }}
             to Purr, a macOS menu bar app for on-device dictation. Purr holds
