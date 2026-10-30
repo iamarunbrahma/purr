@@ -3,6 +3,7 @@
 ## 0.0.2 - Unreleased
 
 - Transcribe meetings in 27 more languages with Parakeet v3.
+- Meeting summaries are written in the meeting's language.
 - Optionally save each meeting's audio next to its notes.
 - Keep a meeting's audio when its transcription fails.
 - Summaries and Voice Edit use Gemma 4 E2B instead of Gemma 3 4B.

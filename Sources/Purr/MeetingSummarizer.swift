@@ -338,11 +338,12 @@ final class MeetingSummarizer {
         var tldr = tldrs.joined(separator: " ")
         do {
             let numbered = tldrs.enumerated().map { "Part \($0.offset + 1): \($0.element)" }
+            let language = Self.summaryLanguage.map { " Write it in \($0)." } ?? ""
             let response = try await LanguageModelSession().respond(
                 to: """
                     These summarize consecutive parts of one meeting, in order. Write \
                     a two or three sentence overview of the whole meeting using only \
-                    facts stated in them. Reply with the overview only.
+                    facts stated in them.\(language) Reply with the overview only.
 
                     \(numbered.joined(separator: "\n\n"))
                     """,
@@ -451,8 +452,9 @@ final class MeetingSummarizer {
             isExcerpt
             ? "Summarize this excerpt from a longer meeting transcript."
             : "Summarize the following meeting transcript."
+        let language = Self.summaryLanguage.map { " Write the minutes in \($0)." } ?? ""
         return """
-            \(header)\(directive)
+            \(header)\(directive)\(language)
 
             Transcript:
             \"\"\"
@@ -538,6 +540,14 @@ final class MeetingSummarizer {
             }
         }
         return roster.contains { $0.hasPrefix("Speaker ") } ? roster : []
+    }
+
+    // The meeting language's name, or nil for English. The prompts are in
+    // English, so without it a Spanish meeting gets English minutes. The
+    // headings stay in English, like the rest of Purr.
+    private static var summaryLanguage: String? {
+        let language = ParakeetLanguage.named(SettingsStore.shared.meetingLanguage)
+        return language.code.isEmpty ? nil : language.name
     }
 
     // Pins the model to the real speaker set. Empty when the transcript carries
@@ -688,28 +698,32 @@ final class MeetingSummarizer {
     }
 
     private func userPrompt(transcript: String) -> String {
-        """
-        Transcript:
-        \(transcript)
+        let language =
+            Self.summaryLanguage.map {
+                "\n\nKeep the headings exactly as written above. Write everything under them in \($0)."
+            } ?? ""
+        return """
+            Transcript:
+            \(transcript)
 
-        Produce these sections in this exact order, in Markdown:
+            Produce these sections in this exact order, in Markdown:
 
-        ## TL;DR
-        Two or three sentences.
+            ## TL;DR
+            Two or three sentences.
 
-        ## Key Decisions
-        Bulleted list. Each bullet states the decision and any
-        deadlines, owners, or budgets.
+            ## Key Decisions
+            Bulleted list. Each bullet states the decision and any
+            deadlines, owners, or budgets.
 
-        ## Action Items
-        Checkbox bullets in the form: - [ ] task (Owner: Speaker N, Due: <when if stated>)
+            ## Action Items
+            Checkbox bullets in the form: - [ ] task (Owner: Speaker N, Due: <when if stated>)
 
-        ## Topics Discussed
-        Bulleted list of topics with one-line recaps.
+            ## Topics Discussed
+            Bulleted list of topics with one-line recaps.
 
-        ## Open Questions
-        Bulleted list of unresolved questions or follow-ups.
-        """
+            ## Open Questions
+            Bulleted list of unresolved questions or follow-ups.\(language)
+            """
     }
 
     // Gemma 4's chat template. The BOS token is added by
