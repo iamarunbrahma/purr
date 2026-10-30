@@ -1,0 +1,44 @@
+name: CI
+
+# Builds and packages Purr for every pull request and every push to main.
+# A pull request from a fork waits until the maintainer approves its run
+# (Settings > Actions), since building runs the PR's Package.swift.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Fails when Package.resolved no longer matches Package.swift, rather
+      # than quietly building other versions than the committed ones.
+      - name: Check dependency pins
+        run: swift package --only-use-versions-from-resolved-file resolve
+
+      # DEV_ID defaults to "-", an ad-hoc signature, so no certificate is
+      # needed. Releases are still signed and notarized by hand.
+      - name: Build the app
+        run: make app
+
+      - name: Verify the signature
+        run: codesign --verify --deep --strict --verbose=2 dist/Purr.app

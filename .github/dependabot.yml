@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current. The cooldown
+  # skips releases younger than a week, so a hijacked release has time to be
+  # caught before it's proposed here.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Updates the pins in Package.resolved, one package per PR, so a bad
+  # version is easy to trace.
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
