@@ -54,7 +54,7 @@ security fixes.
 | Latest release | Yes |
 | Anything older | No - please update |
 
-Update from the menu bar: **About Purr > Check for Updates**.
+Update from the menu bar: **About Purr** checks for a new version each time you open it.
 
 ## Threat model
 

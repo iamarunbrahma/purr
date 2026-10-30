@@ -162,7 +162,7 @@ Any standard text field. Voice editing works in Accessibility-supported fields (
 <details>
 <summary><strong>How do I update Purr?</strong></summary>
 
-Open the menu bar > About Purr and it checks GitHub Releases automatically (or click "Check for Updates"). A new version downloads, verifies its checksum, and relaunches in place.
+Open the menu bar > About Purr and it checks GitHub Releases each time it opens. A new version downloads, verifies its checksum, and relaunches in place.
 
 </details>
 

@@ -106,6 +106,19 @@ final class Updater: ObservableObject {
         }
     }
 
+    // About calls this each time it opens. The updater lives as long as the
+    // app, so otherwise a reopened About keeps showing its first result. A
+    // check, download or install that's under way is left alone.
+    @MainActor
+    func checkForUpdatesUnlessBusy() async {
+        switch state {
+        case .checking, .downloading, .readyToInstall, .installing:
+            return
+        case .idle, .upToDate, .available, .error:
+            await checkForUpdates()
+        }
+    }
+
     // Repo present but releaseless -> up to date. Repo missing -> surface it,
     // so a renamed/deleted repo can't silently look like "no updates".
     private func resolve404() async throws -> State {

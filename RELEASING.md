@@ -140,8 +140,8 @@ unless you are certain which one sorts first.
 
 ### 6. Post-release
 
-- Verify the in-app updater sees the new version: **About Purr > Check for Updates** on a
-  machine running the previous release, and let it complete a real in-place upgrade.
+- Verify the in-app updater sees the new version: open **About Purr** on a machine running
+  the previous release, and let it complete a real in-place upgrade.
 - Confirm the Accessibility and Microphone grants survive the update. Because releases are signed
   with a stable Developer ID, TCC should carry the grants across versions. Verify this on a
   real machine rather than assuming it - if the bundle ID or signing identity ever changes,

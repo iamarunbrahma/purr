@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAbout() {
+        Task { await updater.checkForUpdatesUnlessBusy() }
         if let win = aboutWindow {
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

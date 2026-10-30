@@ -39,12 +39,6 @@ struct AboutView: View {
         }
         .padding(24)
         .frame(width: 380, height: 320)
-        .onAppear {
-            // Quiet check on first open; the button re-triggers it on demand.
-            if case .idle = updater.state {
-                Task { await updater.checkForUpdates() }
-            }
-        }
     }
 
     @ViewBuilder
