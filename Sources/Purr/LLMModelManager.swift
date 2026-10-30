@@ -32,9 +32,6 @@ enum LLMModelManager {
         "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
     static let defaultModelExpectedSize: Int64 = 3_349_516_256
 
-    // Gemma 3 4B, downloaded by earlier releases. Nothing loads it any more.
-    private static let legacyModelFilenames = ["gemma-3-4b-it-Q4_K_M.gguf"]
-
     // What URLSession kept of a download that broke off partway (a minute with
     // no data, a dropped connection), so Retry carries on from there instead
     // of fetching all 3.35 GB again. Memory only: it points at a temp file
@@ -62,22 +59,6 @@ enum LLMModelManager {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
             log.info("Deleted Gemma GGUF at \(url.path, privacy: .public)")
-        }
-    }
-
-    // Run once at launch so an upgrade doesn't strand the old weights on disk.
-    static func removeLegacyModels() {
-        for name in legacyModelFilenames {
-            let url = ModelManager.modelsDirectory.appendingPathComponent(name, isDirectory: false)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            do {
-                try FileManager.default.removeItem(at: url)
-                log.info("Removed legacy model \(name, privacy: .public)")
-            } catch {
-                log.error(
-                    "Could not remove legacy model \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-            }
         }
     }
 

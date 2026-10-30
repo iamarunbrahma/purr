@@ -78,33 +78,12 @@ enum ModelManager {
     }
 
     static var modelsDirectory: URL {
-        _ = renameLowercaseFolder
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]
         let dir = support.appendingPathComponent("Purr/Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
-
-    // Earlier versions wrote to Purr/models. This renames it once, before
-    // anything reads the folder: on a case-sensitive disk the old downloads
-    // would be stranded, and elsewhere Finder would keep showing the old name.
-    private static let renameLowercaseFolder: Void = {
-        let fm = FileManager.default
-        let purr = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Purr", isDirectory: true)
-        guard let names = try? fm.contentsOfDirectory(atPath: purr.path),
-            names.contains("models"), !names.contains("Models")
-        else { return }
-        do {
-            try fm.moveItem(
-                at: purr.appendingPathComponent("models", isDirectory: true),
-                to: purr.appendingPathComponent("Models", isDirectory: true))
-            log.info("Renamed Purr/models to Purr/Models")
-        } catch {
-            log.error("Could not rename the models folder: \(error.localizedDescription, privacy: .public)")
-        }
-    }()
 
     static func localFolder(for modelName: String) async throws -> URL {
         let local = modelsDirectory.appendingPathComponent(modelName, isDirectory: true)
