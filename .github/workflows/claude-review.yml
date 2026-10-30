@@ -69,9 +69,10 @@ jobs:
       - id: review
         uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1.0.258
         with:
-          # A key used only here, with a monthly spend limit: anyone can open
-          # a PR and try to talk the reviewer into leaking it.
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Runs on the maintainer's Claude plan, not API credits. The token
+          # (from `claude setup-token`) is in the action's environment, which
+          # Claude can't read: it has no shell or file tools here.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Outside contributors don't have write access, which the action
           # requires by default. With this set, it also strips secrets from
