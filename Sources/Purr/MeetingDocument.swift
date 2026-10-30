@@ -432,6 +432,31 @@ enum MeetingDocument {
         return audioURL
     }
 
+    // For a meeting whose transcript couldn't be made: the audio alone, named
+    // as its transcript would have been. Like write(_:), it falls back to the
+    // default folder if `folder` (meetingsDirectory(), read by the caller)
+    // fails.
+    static func writeAudio(
+        localSamples: [Float], remoteSamples: [Float]?, recordedAt: Date, folder: URL
+    ) throws -> URL {
+        let name = "Meeting \(filenameTimestamp(recordedAt)).md"
+        func save(into dir: URL) throws -> URL {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return try writeAudio(
+                localSamples: localSamples, remoteSamples: remoteSamples,
+                alongside: dir.appendingPathComponent(name))
+        }
+        let fallback = SettingsStore.defaultMeetingsDirectory
+        do {
+            return try save(into: folder)
+        } catch where folder != fallback {
+            log.warning(
+                "Meeting audio save to chosen folder failed (\(error.localizedDescription, privacy: .public)); saving to default folder \(fallback.path, privacy: .public) instead"
+            )
+            return try save(into: fallback)
+        }
+    }
+
     private static func write(_ data: Data, named name: String, into dir: URL) throws -> URL {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)

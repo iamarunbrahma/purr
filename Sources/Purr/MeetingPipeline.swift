@@ -276,11 +276,41 @@ final class MeetingPipeline: ObservableObject {
             state = .idle
         } catch {
             log.error("Meeting pipeline failed: \(error.localizedDescription, privacy: .public)")
+            // Nothing is on disk until a transcript is, so this is the only
+            // copy of the meeting. Saved while still .processing, so a press
+            // can't start the next meeting meanwhile.
+            let audioURL = await saveAudioOfUntranscribedMeeting(mic: samples, system: systemSamples)
             state = .error(error.localizedDescription)
             let mapped = HUDErrorText.message(for: error)
-            hud.showMessage(mapped ?? "Meeting processing failed. Try again.", autoHideAfter: 4)
+            if let audioURL {
+                hud.showMessage(
+                    (mapped ?? "Couldn't transcribe this meeting.") + " Its audio was saved.", autoHideAfter: 4)
+                NSWorkspace.shared.activateFileViewerSelecting([audioURL])
+            } else {
+                hud.showMessage(mapped ?? "Meeting processing failed. Try again.", autoHideAfter: 4)
+            }
             try? await Task.sleep(for: .seconds(4))
             state = .idle
+        }
+    }
+
+    // Keep audio's promise ("to check or re-transcribe later") matters most
+    // when the transcript couldn't be made, e.g. a model that downloads at
+    // stop time on a Mac that's offline. The mic track is the raw recording:
+    // the echo-cancelled copy is local to the pass that failed.
+    private func saveAudioOfUntranscribedMeeting(mic: [Float], system: [Float]) async -> URL? {
+        guard SettingsStore.shared.saveMeetingAudio else { return nil }
+        let folder = MeetingDocument.meetingsDirectory()
+        do {
+            let url = try await Task.detached {
+                try MeetingDocument.writeAudio(
+                    localSamples: mic, remoteSamples: system, recordedAt: Date(), folder: folder)
+            }.value
+            log.info("Meeting audio saved without a transcript → \(url.path, privacy: .public)")
+            return url
+        } catch {
+            log.error("Meeting audio save failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
