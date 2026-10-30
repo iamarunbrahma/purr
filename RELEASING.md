@@ -49,6 +49,9 @@ make dmg DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer
   It is not stored in the repository.
 - The Developer ID private key lives in the login keychain and should never be exported to
   the repository or to CI without a hardware-backed or secret-managed store.
+- The `ANTHROPIC_API_KEY` repository secret is used only by the Claude review workflow. Make
+  it a dedicated key with a monthly spend limit, and rotate it if a review ever looks
+  manipulated.
 
 ## Release steps
 
@@ -69,6 +72,9 @@ git status --porcelain          # must be empty
 git rev-parse --abbrev-ref HEAD # release from main
 swift build -c release --arch arm64
 ```
+
+Check that CI passed on the commit you're releasing. It builds from a clean checkout with the
+committed `Package.resolved`.
 
 Run the app once and exercise the three hotkeys (dictation, meeting, voice edit) on a real
 machine. There is no automated test suite, so this manual pass is the only gate.
@@ -130,6 +136,9 @@ Create the GitHub release against that tag and attach **both** files:
 - `Purr.dmg`
 - `Purr.dmg.sha256`
 
+Attach them before you publish. Releases are immutable, so once a release is published its
+files can't be added, replaced or deleted, and its tag can't be moved.
+
 The sidecar is not optional. The updater refuses to install a release that lacks it and
 will surface an error to users instead of falling back.
 
@@ -164,14 +173,15 @@ There is no downgrade path in the updater. If a release is bad:
 
 Known weaknesses in the process above, listed so nobody has to rediscover them.
 
-- **No CI.** There is no `.github/` directory. Every release is built by hand on the
-  maintainer's laptop, which is a single point of compromise for an application holding
-  the Accessibility permission. There is no build provenance and no artifact attestation.
-- **Not reproducible.** `Package.resolved` is gitignored and Swift dependencies float on
-  `from:` ranges (`WhisperKit from 0.9.0`, `FluidAudio from 0.8.0`). Two builds from the same
-  commit on different days can link different dependency versions. Committing
-  `Package.resolved` and pinning exact versions is the fix.
+- **Releases are built by hand.** CI builds every pull request, but the signed, notarized
+  release is still built on the maintainer's laptop, which is a single point of compromise
+  for an application holding the Accessibility permission. There is no build provenance: the
+  attestation GitHub records for each release proves which files were published, not how
+  they were built.
+- **Not byte-for-byte reproducible.** `Package.resolved` pins every Swift dependency, so two
+  builds of the same commit link the same versions, but the output still depends on the
+  Xcode version that builds it.
 - **Sidecar shares an origin with the artifact.** See the corresponding note in
   [SECURITY.md](SECURITY.md).
-- **No automated tests.** Step 2's manual pass is the only functional gate before signing.
-- **No dependency scanning.** Dependabot and CodeQL are not enabled.
+- **No automated tests.** CI only checks that the app builds and signs, so step 2's manual
+  pass is the only functional gate before signing.

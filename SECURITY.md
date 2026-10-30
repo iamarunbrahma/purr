@@ -144,24 +144,41 @@ codesign -dv --verbose=4 /Applications/Purr.app 2>&1 | grep TeamIdentifier
 The in-app updater refuses to install a release that has no `.sha256` sidecar, checks the
 download host, and verifies the codesign seal before swapping the bundle.
 
+### Repository protections
+
+- CI builds every pull request on a GitHub-hosted Mac. Pull requests from forks run only
+  after I approve them.
+- CodeQL scans the Swift code, the vendored C and the workflows. Dependabot watches the
+  Swift packages and the GitHub Actions, which are pinned to commit SHAs.
+- Secret scanning with push protection blocks pushes that contain known credential formats.
+- `main` only changes through pull requests that pass CI, add no high-severity CodeQL
+  alerts and carry signed commits. Release tags (`v*`) can't be moved or deleted.
+- Releases after v0.0.1 are immutable. Once one is published, its files can't be replaced
+  or deleted, and GitHub records a signed attestation of them.
+- Pull requests from outside contributors get an automatic review from Claude
+  ([claude-review.yml](.github/workflows/claude-review.yml)). It gets the diff in its prompt,
+  has no shell or file access, and can only comment. Nothing in the workflow runs the pull
+  request's code.
+
 ### Known limitations
 
 Weaknesses I already know about:
 
 - **The checksum sidecar shares an origin with the artifact.** `Purr.dmg.sha256` is published
   in the same GitHub release as `Purr.dmg`. That defends against corruption and interception
-  in transit; it does **not** defend against a compromised GitHub account or token, since an
-  attacker able to replace one file could replace both. An independent signature verified
-  against an offline key is planned.
+  in transit; it does **not** defend against a compromised GitHub account or token. Published
+  releases are immutable, so their files can't be swapped, but an attacker could publish a new
+  release with both files. An independent signature verified against an offline key is
+  planned.
 - **The install helper does not pin the signing identity.** Before swapping the bundle the
   helper runs `codesign --verify --deep --strict` on the app inside the downloaded DMG. That
   proves the bundle carries an intact, valid signature; it does **not** prove the signature
   is *Purr's*. Any bundle signed by any valid Developer ID would pass. Pinning the check to
   Team ID `5JCFRMC367` with `codesign -R` is the fix, and it is not yet in place.
-- **Releases are built by hand on the maintainer's machine.** There is no CI, so there is no
-  build provenance or attestation. See [RELEASING.md](RELEASING.md).
-- **`Package.resolved` is not committed**, and only FluidAudio is pinned to an exact version,
-  so builds are not byte-for-byte reproducible across machines or time.
+- **Releases are built by hand on the maintainer's machine.** CI builds every pull request,
+  but the release itself is built, signed and notarized locally, so there is no build
+  provenance. GitHub's release attestation covers the published files, not the build. See
+  [RELEASING.md](RELEASING.md).
 - **Vendored SpeexDSP has not been audited or fuzzed.** `Sources/CEcho` contains SpeexDSP
   compiled from source with warnings suppressed (`-w`) and a hand-written `config.h`. It
   parses untrusted audio in meeting mode.
