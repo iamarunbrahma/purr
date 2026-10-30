@@ -3,15 +3,13 @@ import Foundation
 import os.log
 
 // Speaker diarization for meeting mode. Wraps FluidAudio's
-// `OfflineDiarizerManager` (community-1, 17.7% DER on AMI) which is the
-// batch/quality variant - better than the streaming diarizer we'd use for
-// live attribution. Meetings are saved-once-then-processed, so batch is the
-// right pick.
+// `OfflineDiarizerManager` (community-1, 17.7% DER on AMI), the batch/quality
+// variant - meetings are saved-once-then-processed, so batch beats the streaming
+// diarizer we'd need for live attribution.
 //
-// Models pull from `FluidInference/speaker-diarization-coreml` on first
-// use, into FluidAudio's default Application Support cache. We piggyback
-// on that path rather than reroute it because the FluidAudio SDK already
-// handles version pinning, redownload-on-corruption, and ANE compilation.
+// Models pull from `FluidInference/speaker-diarization-coreml` on first use; we
+// leave the download to the FluidAudio SDK because it already handles version
+// pinning, redownload-on-corruption, and ANE compilation.
 @MainActor
 final class Diarizer {
     private var manager: OfflineDiarizerManager?
@@ -26,9 +24,10 @@ final class Diarizer {
         }
     }
 
-    // Same work as warmup() but propagates errors instead of logging-and-swallowing them.
+    // Same work as warmup() but propagates errors instead of logging-and-swallowing
+    // them, and fetches the files again if they were deleted while loaded.
     func downloadAndWarmup() async throws {
-        if manager != nil { return }
+        if manager != nil, Self.isInstalled() { return }
         let m = OfflineDiarizerManager(config: .default)
         try await m.prepareModels(directory: ModelManager.modelsDirectory)
         self.manager = m
@@ -47,25 +46,22 @@ final class Diarizer {
         return result.segments
     }
 
-    // Drops the in-memory CoreML graphs so a subsequent on-disk
-    // delete() doesn't leave a stale mmap pointing at removed files.
-    // MUST run before removeItem.
+    // Drops the in-memory CoreML graphs so a later delete() doesn't leave a stale
+    // mmap pointing at removed files. MUST run before removeItem.
     func unload() {
         manager = nil
         log.info("Offline diarizer unloaded.")
     }
 
-    // FluidAudio writes the diarizer's CoreML graphs and config JSONs into this
-    // folder. Routed under Purr's own models folder (not FluidAudio's default)
-    // so every Purr model lives in one place that uninstalling removes.
+    // Where FluidAudio writes the diarizer's CoreML graphs and config JSONs. Routed
+    // under Purr's own models folder, not FluidAudio's default, so every model lives
+    // in one place that uninstalling removes.
     static var modelDirectory: URL {
         ModelManager.modelsDirectory.appendingPathComponent("speaker-diarization", isDirectory: true)
     }
 
     static func isInstalled() -> Bool {
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: modelDirectory.path)
-        else { return false }
-        return !contents.isEmpty
+        ModelManager.filesComplete(ModelNames.OfflineDiarizer.requiredModels, in: modelDirectory)
     }
 
     static func delete() throws {

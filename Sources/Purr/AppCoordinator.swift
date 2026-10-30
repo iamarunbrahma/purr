@@ -3,22 +3,18 @@ import Combine
 import Foundation
 import os.log
 
-// Central orchestrator. Owns the audio + engine + insertion pipeline and is
-// the only place where their lifecycles meet. Three flows live here, all
-// driven by the multi-binding HotkeyManager:
+// Central orchestrator, owning the audio + engine + insertion pipeline.
+// Three flows, all driven by the multi-binding HotkeyManager:
 //
-// * **Dictation (transcribe)** - record while hotkey held, on release run
-//   either batch transcribe + paste or EOU streaming + live typing.
-//   Decided per-press by `shouldStreamThisRecording()`.
+// * **Dictation** - record while held, on release run batch transcribe +
+//   paste or EOU streaming + live typing (`shouldStreamThisRecording()`).
 // * **Meeting** - tap-to-toggle long-form recording with offline diarize
-//   on stop, written to a Markdown file. Lives in `MeetingPipeline`.
-// * **Voice edit** - hold while text is selected; transcribed speech is
-//   parsed as an edit instruction and applied via Accessibility (or paste
-//   fallback). Lives in `VoiceEditor`.
+//   on stop, written to Markdown. Lives in `MeetingPipeline`.
+// * **Voice edit** - hold while text is selected; speech is parsed as an
+//   edit instruction and applied via Accessibility. Lives in `VoiceEditor`.
 //
-// While a meeting is recording, dictation is suspended at the hotkey
-// layer - accidentally inserting batch transcripts mid-meeting would be
-// bad. Voice-edit is independent and can fire any time.
+// Dictation is suspended at the hotkey layer while a meeting records, so a
+// reflex press can't insert a transcript over meeting notes.
 @MainActor
 final class AppCoordinator: ObservableObject {
     enum State: Equatable {
@@ -28,9 +24,7 @@ final class AppCoordinator: ObservableObject {
         case error(String)
     }
 
-    // Unified glyph state for the menu bar. Folds the three independent flows
-    // (dictation `state`, voice-edit, meeting) into one signal so a single
-    // status item can represent whichever one is active.
+    // Folds the three independent flows into one signal for the status item.
     enum MenuBarStatus: Equatable {
         case idle
         case recording
@@ -56,11 +50,15 @@ final class AppCoordinator: ObservableObject {
         case failed(Error)
     }
 
+    enum UninstallResult {
+        case ok
+        case busy
+        case failed(Error)
+    }
+
     @Published private(set) var state: State = .idle {
         didSet {
-            // Equality check avoids spamming the log when the same state
-            // is re-asserted (e.g. successive .recording transitions).
-            if oldValue != state {
+            if oldValue != state {  // avoid spamming the log on a re-asserted state
                 log.info(
                     "State: \(String(describing: oldValue), privacy: .public) -> \(String(describing: self.state), privacy: .public)"
                 )
@@ -70,37 +68,25 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    // Mirror of canQuitSafely() as a @Published flag so SwiftUI views (the
-    // updater UI) can disable destructive actions when a recording / meeting
-    // is in flight. Recomputed from coordinator state + meeting state.
+    // Lets SwiftUI (the updater UI) disable destructive actions mid-recording.
     @Published private(set) var safeToQuit: Bool = true
 
-    // Single signal the menu bar observes. Recomputed whenever any of the
-    // three flows changes state (see refreshMenuBarStatus()).
     @Published private(set) var menuBarStatus: MenuBarStatus = .idle
 
-    // 0..1 while the Parakeet TDT v2 weights are downloading, nil otherwise.
-    // Fed by ParakeetEngine.onBatchProgress and used by the Engine tab's
-    // Parakeet card so an automatic warm-up download shows a live progress bar
-    // too - not just a manual Download tap (which previously was the only path
-    // the card could observe).
-    @Published private(set) var parakeetBatchProgress: Double?
+    // Non-nil while downloading - drives Settings' model rows for both an
+    // automatic warmup download and a manual Download tap.
+    @Published private(set) var parakeetBatchProgress: ModelDownloadProgress?
+    @Published private(set) var eouDownloadProgress: ModelDownloadProgress?
+    // Unlike the other two, this one never auto-downloads during warmup.
+    @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
 
-    // Same, for the EOU streaming model (Smart Typing). Lets the Smart Typing
-    // card show a live bar when warm-up downloads EOU, not just a manual tap.
-    @Published private(set) var eouDownloadProgress: Double?
-
-    // True while a meeting session is in flight (recording or processing).
-    // Feeds menuBarStatus; a meeting outranks dictation/voice-edit for the glyph.
+    // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the
+    // glyph - and canQuitSafely().
     private var meetingActive = false
 
-    // Mirror of voiceEditor.state, updated from the value the observer emits.
-    // We must NOT read voiceEditor.state inside its own sink: @Published emits
-    // during willSet, so the property still holds the PREVIOUS value there.
-    // Reading it would leave the glyph a step behind - and stick the transcribe
-    // icon on screen after a voice edit ends (the .transcribing→.idle emission
-    // would compute from the stale .transcribing). Mirroring the emitted value
-    // sidesteps that entirely.
+    // Mirrors voiceEditor.state from the emitted value, not read live: inside
+    // its own sink, @Published's willSet means the property still holds the
+    // *previous* value, which would leave the glyph a step behind.
     private var voiceEditState: VoiceEditor.State = .idle
 
     private let recorder = AudioRecorder()
@@ -108,9 +94,12 @@ final class AppCoordinator: ObservableObject {
     private let hud = RecordingHUD()
     private let hotkey = HotkeyManager()
 
-    // Engine is rebuilt whenever the user switches between Parakeet and
-    // Whisper in Settings. We keep one alive at a time to avoid loading
-    // both ~1GB pipes into memory.
+    // Shortcuts dead right now: Secure Input is on and the Carbon fallback
+    // couldn't take them over. Read by the menu bar on each open.
+    var shortcutsBlockedBySecureInput: [String] { hotkey.secureInputGaps }
+
+    // Rebuilt on Settings engine switch; only one lives at a time so both
+    // ~1GB pipes are never loaded together.
     private var engine: any TranscriptionEngine = ParakeetEngine()
     private var parakeet = ParakeetEngine()
     private let summarizer = MeetingSummarizer.shared
@@ -118,33 +107,27 @@ final class AppCoordinator: ObservableObject {
     private var voiceEditor: VoiceEditor!
     private var meetingObserver: AnyCancellable?
     private var voiceEditObserver: AnyCancellable?
+    private var accessibilityObserver: NSObjectProtocol?
 
     private var levelTask: Task<Void, Never>?
-    // When the current dictation entered the recording state. Lets us tell a
-    // genuine "held the key and spoke but the mic was still waking" failure
-    // from a quick accidental tap.
+    // Lets a genuine mic-still-waking failure be told apart from a quick
+    // accidental tap.
     private var recordingStartedAt: Date?
     private var streamingTask: Task<Void, Never>?
     private var streamingSession: (any StreamingSession)?
-    // The audio-feed loop, pumping recorder.chunks into the streaming session.
-    // Owned here (not nested in streamingTask) so finishStreamingRecording()
-    // can await it - draining every buffered chunk into the session - before
-    // calling finish(). See beginStreamingRecording / finishStreamingRecording.
+    // Owned here, not nested in streamingTask, so finishStreamingRecording()
+    // can await it - draining every buffered chunk - before calling finish().
     private var feedTask: Task<Void, Never>?
-    // Streaming sessions need an `await` to load - meanwhile the user might
-    // already release the hotkey. We track that intent here so the in-flight
-    // setup task can bail out instead of starting a recording nobody wants.
+    // A streaming session needs an `await` to load, during which the user may
+    // already release the hotkey - tracked here so setup can bail cleanly.
     private var streamingStartupInFlight = false
     private var releasedDuringStartup = false
 
-    // Quit callback delivered by AppDelegate. Stored so the global tap hotkey
-    // can drive the same code path as the status-bar Quit menu item.
+    // Lets the global quit hotkey drive the same path as the status-bar item.
     private var onQuit: (() -> Void)?
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "coordinator")
-    // Streaming post-processing trace, kept on its own category so the
-    // per-utterance flow can be followed without the coordinator's
-    // state-transition noise. Same category as PostProcessor's own logs.
+    // Own category so the per-utterance flow reads without state-transition noise.
     private let postLog = Logger(subsystem: "com.arunbrahma.purr", category: "postprocess")
 
     func setMenuActions(quit: @escaping () -> Void) {
@@ -154,40 +137,37 @@ final class AppCoordinator: ObservableObject {
     func start() {
         rebuildEngine(initial: true)
 
-        // Mirror the Parakeet batch download's progress into a @Published the
-        // Engine tab observes, so warm-up and manual downloads both drive the
-        // card's progress bar through one path.
-        parakeet.onBatchProgress = { [weak self] fraction in
-            self?.parakeetBatchProgress = fraction
+        parakeet.batchDownload.onChange = { [weak self] progress in
+            self?.parakeetBatchProgress = progress
         }
-        parakeet.onEOUProgress = { [weak self] fraction in
-            self?.eouDownloadProgress = fraction
+        parakeet.eouDownload.onChange = { [weak self] progress in
+            self?.eouDownloadProgress = progress
+        }
+        parakeet.meetingBatchDownload.onChange = { [weak self] progress in
+            self?.meetingLanguageModelProgress = progress
         }
 
-        // Smart Typing requires the EOU model, and that model is fetched only
-        // from its explicit Download button - which is what enables the toggle.
-        // If a stale "on" state persists without the model on disk (carried over
-        // from an older build, or EOU removed), turn it off rather than letting
-        // warm-up or a dictation silently pull ~440 MB. The user re-enables it
-        // after downloading EOU. Never the other way round.
+        // A stale "on" without the EOU model on disk (an older build, or EOU
+        // removed) gets turned off rather than silently pulling ~440MB.
         if SettingsStore.shared.smartTyping, !ParakeetEngine.eouIsInstalled() {
             SettingsStore.shared.smartTyping = false
         }
 
-        // Keep the mic warm between presses; the recorder self-skips warming
-        // on Bluetooth to avoid pinning it to SCO mode.
+        // Off the main actor: the first launch after the Gemma 4 switch
+        // removes the 2.5 GB Gemma 3 file.
+        Task.detached(priority: .utility) { LLMModelManager.removeLegacyModels() }
+
+        // The recorder self-skips warming on Bluetooth to avoid pinning SCO mode.
         recorder.allowsWarmKeeping = true
+        // Off the main actor: on a cold system this takes ~2 s, which the first
+        // dictation would otherwise wait on.
+        Task.detached(priority: .userInitiated) { AudioRecorder.prepareForFirstStart() }
 
         meeting = MeetingPipeline(parakeet: parakeet, hud: hud, summarizer: summarizer)
         voiceEditor = VoiceEditor(hud: hud) { [weak self] in
-            // Voice-edit always uses whichever engine the user has selected
-            // - they may want fast Tiny EN for edits even if Parakeet is
-            // their dictation default.
             self?.engine ?? ParakeetEngine()
         }
 
-        // While a meeting is recording, hotkey-level dictation is gated so
-        // the user can't insert a transcript over their notes by reflex.
         meetingObserver = meeting.$state.sink { [weak self] state in
             guard let self else { return }
             switch state {
@@ -202,9 +182,8 @@ final class AppCoordinator: ObservableObject {
             self.refreshMenuBarStatus()
         }
 
-        // Voice edit drives the HUD directly and never touches `state`, so the
-        // menu bar would otherwise miss it - mirror its activity into the glyph.
-        // Use the emitted value (not voiceEditor.state) - see voiceEditState.
+        // Voice edit drives the HUD directly and never touches `state` -
+        // mirror its activity into the glyph, or the menu bar would miss it.
         voiceEditObserver = voiceEditor.$state.sink { [weak self] newState in
             guard let self else { return }
             self.voiceEditState = newState
@@ -212,8 +191,21 @@ final class AppCoordinator: ObservableObject {
         }
 
         installHotkeys()
-        // Eager warmup so the first press doesn't pay model-load cost.
-        Task { await engine.warmup() }
+        accessibilityObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Permissions.accessibilityChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                // The trust read can trail the notification by a moment.
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.installHotkeysIfNeeded()
+            }
+        }
+
+        // Eager, so the first press pays no load cost - except before setup,
+        // whose engine step decides which model gets downloaded.
+        if SettingsStore.shared.onboardingDone {
+            Task { await engine.warmup() }
+        }
     }
 
     func reloadEngine() {
@@ -225,7 +217,14 @@ final class AppCoordinator: ObservableObject {
         installHotkeys()
     }
 
-    // Refuses while a meeting is in flight so we don't pull the mmap out from under the running session.
+    // The hotkey tap can't exist until Accessibility is on, so one that failed
+    // is retried when macOS reports the switch changed, and when the
+    // permission rows see the grant themselves.
+    func installHotkeysIfNeeded() {
+        guard !hotkey.isInstalled, Permissions.isGranted(.accessibility) else { return }
+        installHotkeys()
+    }
+
     @discardableResult
     func deleteDiarizationModel() -> DiarizerDeleteResult {
         switch meeting.state {
@@ -271,9 +270,8 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    // Parakeet TDT v2 backs dictation, meetings, and voice editing, so refuse
-    // while any of those is mid-flight rather than unloading the manager out
-    // from under a running utterance.
+    // v2 backs dictation, meetings, and voice editing - refuse while any is
+    // mid-flight rather than unloading it out from under a running utterance.
     @discardableResult
     func deleteParakeetModel() -> DiarizerDeleteResult {
         switch state {
@@ -299,8 +297,6 @@ final class AppCoordinator: ObservableObject {
 
     @discardableResult
     func deleteEOUModel() -> DiarizerDeleteResult {
-        // Refuse mid-session so we don't unload the manager out from
-        // under an in-flight utterance.
         if streamingSession != nil { return .busy }
         if streamingStartupInFlight { return .busy }
         parakeet.unloadStreamingManager()
@@ -314,26 +310,40 @@ final class AppCoordinator: ObservableObject {
         return .ok
     }
 
-    // Wipes every downloaded model in one action (Parakeet batch + EOU, all
-    // Whisper checkpoints, the diarizer, and the Gemma GGUF). Refuses while any
-    // capture or generation is in flight so we never pull weights out from under
-    // a running session. Releases the in-memory model handles first, then
-    // removes the on-disk weights, then turns off the features whose model is
-    // now gone - mirroring the per-model delete buttons. Meeting transcripts and
-    // user preferences are left untouched.
+    func downloadMeetingLanguageModel() async -> ModelDownloadResult {
+        do {
+            try await parakeet.downloadAndLoadMeetingManager()
+            return .ok
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // Doesn't touch meetingLanguage - a language pointed at a now-deleted
+    // model just re-downloads it on the next meeting.
+    @discardableResult
+    func deleteMeetingLanguageModel() -> DiarizerDeleteResult {
+        switch meeting.state {
+        case .recording, .processing: return .busy
+        case .idle, .error: break
+        }
+        if meetingLanguageModelProgress != nil { return .busy }
+        parakeet.unloadMeetingManager()
+        do {
+            try ParakeetEngine.meetingModelDelete()
+        } catch {
+            return .failed(error)
+        }
+        log.info("Parakeet TDT v3 (meeting) deleted on user request.")
+        return .ok
+    }
+
+    // Wipes every downloaded model. Releases in-memory handles first, then
+    // removes on-disk weights, then turns off features whose model is gone.
+    // Meeting transcripts and preferences are left untouched.
     @discardableResult
     func deleteAllModels() async -> DeleteAllModelsResult {
-        guard canQuitSafely() else { return .busy }
-        if streamingSession != nil || streamingStartupInFlight { return .busy }
-        if voiceEditState != .idle { return .busy }
-        if parakeetBatchProgress != nil || eouDownloadProgress != nil { return .busy }
-
-        // Release every in-memory session so no deleted file stays mmap'd behind
-        // a live handle (and so we reclaim the unified memory).
-        await summarizer.unload()
-        meeting.unloadDiarizer()
-        parakeet.unloadStreamingManager()
-        parakeet.unloadBatchManager()
+        guard await releaseModelsIfIdle() else { return .busy }
 
         do {
             try ModelManager.deleteAllModels()
@@ -342,9 +352,8 @@ final class AppCoordinator: ObservableObject {
             return .failed(error)
         }
 
-        // Turn off features whose model just disappeared. Auto-summarize keeps
-        // working when Apple's built-in model is available (it needs no
-        // download), so only fall back to off when there's no backend left.
+        // Auto-summarize keeps working via Apple's built-in model (no
+        // download needed); fall back to off only when no backend is left.
         let s = SettingsStore.shared
         s.smartTyping = false
         s.meetingEnabled = false
@@ -360,13 +369,48 @@ final class AppCoordinator: ObservableObject {
             s.summarizeMeetings = false
         }
 
-        // Drop the now-stale engine handle (a Whisper engine may still hold a
-        // deleted model) and re-bind hotkeys to the flipped feature toggles. We
-        // deliberately don't warm up here - that would immediately re-download.
+        // No warmup here - that would immediately re-download.
         rebuildEngine(initial: false)
         installHotkeys()
         log.info("All models deleted; dependent features turned off.")
         return .ok
+    }
+
+    // Settings › General › Uninstall. On .ok the caller quits straight away:
+    // Purr's files are in the Trash, its permissions are reset, and the
+    // cleanup helper is waiting for this process to exit.
+    func uninstall() async -> UninstallResult {
+        guard await releaseModelsIfIdle() else { return .busy }
+        do {
+            try Uninstaller.run()
+            return .ok
+        } catch {
+            log.error("Uninstall failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(error)
+        }
+    }
+
+    // Shared by deleteAllModels and uninstall: refuses while anything records,
+    // transcribes or downloads, then unloads every model so no deleted file
+    // stays mmap'd behind a live handle.
+    private func releaseModelsIfIdle() async -> Bool {
+        guard isIdle() else { return false }
+        await summarizer.unload()
+        // A hotkey can start a recording while unload() awaits.
+        guard isIdle() else { return false }
+        meeting.unloadDiarizer()
+        parakeet.unloadStreamingManager()
+        parakeet.unloadBatchManager()
+        parakeet.unloadMeetingManager()
+        return true
+    }
+
+    private func isIdle() -> Bool {
+        guard canQuitSafely() else { return false }
+        if streamingSession != nil || streamingStartupInFlight { return false }
+        if voiceEditState != .idle { return false }
+        if parakeetBatchProgress != nil || eouDownloadProgress != nil { return false }
+        return meetingLanguageModelProgress == nil
     }
 
     private func rebuildEngine(initial: Bool) {
@@ -410,10 +454,8 @@ final class AppCoordinator: ObservableObject {
                     onRelease: { [weak self] in self?.voiceEditor.handleRelease() }
                 ))
         }
-        // Global Quit hotkey. Hardcoded, always-on. Tap action, so release is
-        // a no-op. Gated on `canQuitSafely()` to protect in-progress recordings
-        // or transcriptions. Settings and Onboarding live in the menu bar
-        // dropdown only - no global shortcut.
+        // Hardcoded, always-on, gated on canQuitSafely(). Settings lives in
+        // the menu bar dropdown only - no global shortcut.
         bindings.append(
             .init(
                 action: .quit,
@@ -440,13 +482,9 @@ final class AppCoordinator: ObservableObject {
         case .recording, .transcribing: return false
         case .idle, .error: break
         }
-        if let meeting = meeting {
-            switch meeting.state {
-            case .recording, .processing: return false
-            case .idle, .error: break
-            }
-        }
-        return true
+        // Not meeting.state: the meeting observer calls this before that
+        // changes, so it would still hold the previous state.
+        return !meetingActive
     }
 
     private func refreshSafeToQuit() {
@@ -459,9 +497,8 @@ final class AppCoordinator: ObservableObject {
         if menuBarStatus != next { menuBarStatus = next }
     }
 
-    // Meeting outranks the per-press flows (it's the long-running capture and
-    // gates dictation anyway). Dictation `state` is checked before voice-edit
-    // only because that's the common path; the two don't run at once.
+    // Meeting outranks the per-press flows. Dictation is checked before
+    // voice-edit only because it's the common path - the two don't run at once.
     private func computeMenuBarStatus() -> MenuBarStatus {
         if meetingActive { return .meeting }
         switch state {
@@ -481,11 +518,8 @@ final class AppCoordinator: ObservableObject {
     // Dictation hotkey lifecycle
     // ------------------------------------------------------------------
 
-    // Non-interruptible dictation work. .recording is intentionally excluded:
-    // in toggle mode a press during recording is the *stop* gesture, and in
-    // hold-to-talk a re-press during recording is already a no-op in
-    // beginRecording(). What must never be cut off or duplicated is the
-    // post-capture transcription and the streaming-session startup.
+    // .recording excluded: a press then is the toggle-mode stop gesture, and
+    // a hold-to-talk re-press is already a no-op in beginRecording().
     private var dictationBusy: Bool {
         if streamingStartupInFlight { return true }
         if case .transcribing = state { return true }
@@ -520,10 +554,8 @@ final class AppCoordinator: ObservableObject {
         if state == .recording {
             Task { await finishRecording() }
         } else if streamingStartupInFlight {
-            // User let go before the streaming session finished loading.
-            // Mark the intent so the in-flight setup task tears down
-            // cleanly instead of starting a recording the user has already
-            // abandoned.
+            // Let go before the session finished loading - mark it so setup
+            // tears down cleanly instead of starting an abandoned recording.
             releasedDuringStartup = true
         }
     }
@@ -539,9 +571,8 @@ final class AppCoordinator: ObservableObject {
         case .recording, .transcribing: return
         case .idle, .error: break
         }
-        // A streaming session that's still loading counts as "starting up";
-        // refusing here prevents a second press from kicking off a parallel
-        // setup Task and leaving an orphaned session behind.
+        // Refuse while starting up, so a second press can't kick off a
+        // parallel setup Task and leave an orphaned session behind.
         if streamingStartupInFlight { return }
 
         if shouldStreamThisRecording() {
@@ -568,9 +599,7 @@ final class AppCoordinator: ObservableObject {
             try recorder.start()
             state = .recording
             recordingStartedAt = Date()
-            // "Warming up…" until the mic delivers its first buffer;
-            // startLevelTask() flips it to "Listening" then.
-            hud.show(.warmingUp)
+            hud.show(.warmingUp)  // startLevelTask() flips to "Listening" on first buffer
             startLevelTask()
         } catch {
             log.error("Recorder failed to start: \(error.localizedDescription, privacy: .public)")
@@ -592,10 +621,9 @@ final class AppCoordinator: ObservableObject {
             "Batch recording finished: \(samples.count, privacy: .public) samples (\(String(format: "%.2f", seconds), privacy: .public)s)"
         )
         guard samples.count >= 16_000 * 4 / 10 else {
-            // Distinguish a wake-up failure - the key was held for a real moment
-            // but the mic delivered almost nothing because it was still powering
-            // up - from a quick accidental tap. The former gets an honest
-            // message and a fresh device next time, not a silent discard.
+            // A key held for a real moment but almost no audio means the mic
+            // was still waking up, not an accidental tap - give it an honest
+            // message instead of a silent discard.
             if heldFor >= 1.0, samples.count < 16_000 / 5 {
                 let btHint =
                     AudioRecorder.defaultInputIsBluetooth()
@@ -619,12 +647,10 @@ final class AppCoordinator: ObservableObject {
         state = .transcribing
         hud.show(.transcribing)
 
-        // DC-removal + peak-normalise to a sane level before handing off to
-        // the engine. Parakeet TDT is trained on broadcast-loud speech and
-        // hallucinates whole utterances on too-quiet input ("How are you
-        // doing?" decoding to "What were you giving?" is the classic
-        // signature). Log the original peak so follow-up support requests
-        // have the numbers we need to diagnose mic gain issues.
+        // Parakeet TDT hallucinates whole utterances on too-quiet input
+        // ("How are you doing?" -> "What were you giving?" is the classic
+        // signature), so normalize before handing off; log the peak for
+        // diagnosing mic gain reports.
         let prepared = AudioPreprocessor.normalize(samples)
         log.info(
             "Audio peak before normalisation: \(String(format: "%.1f", prepared.originalPeakDbFS), privacy: .public) dBFS"
@@ -635,6 +661,7 @@ final class AppCoordinator: ObservableObject {
             let raw = try await engine.transcribe(samples: prepared.samples)
             let processed = makePostProcessor().apply(raw)
             if processed.text.isEmpty {
+                log.info("Transcript empty - nothing to paste.")
                 state = .idle
                 if processed.dropPreviousChunks > 0 {
                     hud.showMessage("Nothing to scratch here", autoHideAfter: 2.5)
@@ -642,6 +669,7 @@ final class AppCoordinator: ObservableObject {
                     hud.hide()
                 }
             } else if SettingsStore.shared.autoPaste {
+                log.info("Pasting \(processed.text.count, privacy: .public) characters.")
                 inserter.insert(processed.text + " ")
                 state = .idle
                 if micWasVeryQuiet {
@@ -674,9 +702,8 @@ final class AppCoordinator: ObservableObject {
             do {
                 let session = try await engine.makeStreamingSession()
 
-                // Hotkey was released while we were loading the session.
-                // Tear it down without ever entering recording state - the
-                // user has already moved on.
+                // Hotkey released mid-load - tear down without ever
+                // entering recording state.
                 if releasedDuringStartup {
                     await session.cancel()
                     streamingStartupInFlight = false
@@ -690,9 +717,8 @@ final class AppCoordinator: ObservableObject {
                 do {
                     try recorder.start()
                 } catch {
-                    // Mic device disappeared / permission revoked. Cancel
-                    // the session we just allocated so the next press isn't
-                    // routed into a half-built streaming flow.
+                    // Cancel the session so the next press isn't routed
+                    // into a half-built streaming flow.
                     await session.cancel()
                     self.streamingSession = nil
                     streamingStartupInFlight = false
@@ -702,24 +728,19 @@ final class AppCoordinator: ObservableObject {
 
                 state = .recording
                 recordingStartedAt = Date()
-                // Reserve the pill's preview area before the first mic buffer
-                // flips it to .recording, so it sizes once and shows the live
-                // sentence as it streams.
+                // Reserve the pill's preview area before the first buffer
+                // flips it to .recording, so it sizes once and stays put.
                 hud.setPreviewActive(true)
                 hud.show(.warmingUp)
                 startLevelTask()
                 streamingStartupInFlight = false
 
-                // Two concurrent tasks: feed chunks into the session, and
-                // drain its events (preview + per-sentence commit). Both die
-                // when the session is finished or cancelled.
-                //
-                // The feed task is owned by the coordinator (not nested inside
-                // the event task) so finishStreamingRecording() can await it -
-                // draining every buffered chunk into the session - before
-                // calling finish(). finish() only transcribes audio already
-                // fed, so a chunk still in flight when it runs would be lost:
-                // that's the trailing words that vanish on a quick key release.
+                // Two concurrent tasks: feed chunks in, drain events out. The
+                // feed task is owned here (not nested in the event task) so
+                // finishStreamingRecording() can await it - draining every
+                // buffered chunk - before calling finish(), which only
+                // transcribes audio already fed. Otherwise a chunk still in
+                // flight is lost as trailing words on a quick key release.
                 feedTask = Task { [recorder, weak self] in
                     for await chunk in recorder.chunks {
                         guard self != nil else { break }
@@ -743,17 +764,13 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func runStreamingTask(session: any StreamingSession) async {
-        // Per-sentence commit. Partials only drive the HUD preview - nothing
-        // touches the document until a pause (EOU), when we post-process that
-        // one sentence and paste it once. Already-committed text is never
-        // re-edited, so there is no reconcile, no model drift, and no cascade
-        // across pauses.
-        //
-        // The session resets the recognizer at each EOU, so every
-        // `.endOfUtterance` carries one complete sentence (not the running
-        // transcript). `committed` holds the exact strings pasted so "scratch
-        // that" can delete them precisely.
-        var committed: [String] = []
+        // Per-sentence commit: partials only drive the HUD preview, nothing
+        // touches the document until a pause pastes the sentence once, at
+        // batch quality - committed text is never re-edited. `committed`
+        // holds the exact pasted strings so "scratch that" can delete them
+        // precisely, and the app each went to: the backspaces land in whatever
+        // app is frontmost, so they're only sent while that's still the one.
+        var committed: [(text: String, app: pid_t?)] = []
         var preview = ""
 
         for await event in session.events {
@@ -761,11 +778,13 @@ final class AppCoordinator: ObservableObject {
             case .partial(let suffix):
                 preview += suffix
                 hud.updatePreview(preview)
-            case .endOfUtterance(let utteranceRaw):
+            case .endOfUtterance(let utteranceRaw, let audio):
                 preview = ""
                 hud.updatePreview("")
-
-                let result = makePostProcessor().apply(utteranceRaw)
+                // The session only ends utterances that decoded words or held
+                // speech, so bare room noise never reaches the batch model.
+                let raw = await batchQualityText(audio: audio, streamed: utteranceRaw)
+                let result = makePostProcessor().apply(raw)
                 postLog.debug(
                     "EOU commit: '\(result.text, privacy: .public)' drop=\(result.dropPreviousChunks, privacy: .public)"
                 )
@@ -774,29 +793,53 @@ final class AppCoordinator: ObservableObject {
                 // exactly the characters we pasted for the last sentence(s).
                 if result.dropPreviousChunks > 0 {
                     let drop = min(result.dropPreviousChunks, committed.count)
-                    let chars = committed.suffix(drop).reduce(0) { $0 + $1.count }
+                    let pieces = committed.suffix(drop)
                     committed.removeLast(drop)
-                    if chars > 0 { inserter.deleteBackward(chars) }
+                    let frontApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    if pieces.allSatisfy({ $0.app == frontApp }) {
+                        let chars = pieces.reduce(0) { $0 + $1.text.count }
+                        if chars > 0 { inserter.deleteBackward(chars) }
+                    } else {
+                        log.info("Scratch that: the sentence went to another app - not deleting.")
+                    }
                 }
 
                 guard !result.text.isEmpty else { continue }
-                // One space between sentences, but only when neither side already
-                // carries a break (a "new line" command, or a leading space the
-                // PostProcessor already trimmed).
-                let prevNeedsGap = committed.last?.last.map { !$0.isWhitespace } ?? false
+                // One space between sentences, unless either side already
+                // carries a break (a "new line" command, or a trimmed leading space).
+                let prevNeedsGap = committed.last?.text.last.map { !$0.isWhitespace } ?? false
                 let nextNeedsGap = result.text.first.map { !$0.isWhitespace } ?? true
                 let piece = (prevNeedsGap && nextNeedsGap ? " " : "") + result.text
                 inserter.insert(piece)
-                committed.append(piece)
+                committed.append((piece, NSWorkspace.shared.frontmostApplication?.processIdentifier))
             }
         }
         hud.updatePreview("")
 
         // Separate dictation sessions so the next press doesn't butt up
         // ("worldfoo"): one trailing space, unless the last sentence already
-        // ended in whitespace (e.g. a "new line" command).
-        if let last = committed.last?.last, !last.isWhitespace {
-            inserter.insert(" ")
+        // ended in whitespace (e.g. a "new line" command). Direct keystroke,
+        // not insert() - see insertLiteralSpace's comment.
+        if let last = committed.last?.text.last, !last.isWhitespace {
+            inserter.insertLiteralSpace()
+        }
+    }
+
+    // The streaming model is fast but rough (lowercase, no punctuation, weaker
+    // words), so it only drives the preview and finds the pauses: each
+    // finished utterance's audio is re-transcribed by the batch model, prepared
+    // the same way as a batch recording. The streamed text is the fallback if
+    // that pass fails.
+    private func batchQualityText(audio: [Float], streamed: String) async -> String {
+        postLog.debug("streamed: '\(streamed, privacy: .public)'")
+        do {
+            let prepared = AudioPreprocessor.normalize(audio)
+            return try await engine.transcribe(samples: prepared.samples)
+        } catch {
+            log.error(
+                "Batch pass failed, pasting the streamed text: \(error.localizedDescription, privacy: .public)"
+            )
+            return streamed
         }
     }
 
@@ -814,24 +857,17 @@ final class AppCoordinator: ObservableObject {
             return
         }
         do {
-            // recorder.stop() closed recorder.chunks, so the feed loop now
-            // drains the last buffered mic chunks into the session and ends.
-            // Await it BEFORE finish(): the manager only transcribes audio that
-            // has already been fed, so finishing while chunks are still in
-            // flight drops the trailing words - the ones still showing as a
-            // live preview because no in-stream EOU (1.28 s of silence) had
-            // fired yet. Bounded: the stream is closed, so the loop ends once
-            // the buffered chunks are consumed.
+            // recorder.stop() closed recorder.chunks, so the feed loop drains
+            // the last buffered chunks and ends - await it BEFORE finish(),
+            // which only transcribes audio already fed; otherwise chunks
+            // still in flight drop as trailing words.
             await feedTask?.value
             feedTask = nil
 
-            // finish() flushes the remaining padded chunk, yields a final
-            // .endOfUtterance, and closes the events stream; the
-            // runStreamingTask loop commits that trailing utterance there.
-            // Awaiting the task (rather than cancelling it) guarantees that
-            // commit - and the trailing space appended after the loop - have
-            // run before we tear down. The await is bounded: finish() already
-            // closed the stream, so the loop terminates.
+            // Awaiting (not cancelling) streamingTask guarantees the trailing
+            // .endOfUtterance that finish() yields gets committed - and its
+            // trailing space appended - before we tear down. Bounded: finish()
+            // already closed the stream, so the loop terminates.
             try await session.finish()
             await streamingTask?.value
             streamingSession = nil
@@ -839,9 +875,9 @@ final class AppCoordinator: ObservableObject {
             state = .idle
             hud.hide()
         } catch {
-            // finish() threw before closing the stream. Close it explicitly so
-            // the consumer loop terminates, then drain both tasks (now bounded)
-            // instead of leaking them.
+            // finish() threw before closing the stream - close it explicitly
+            // so the consumer loop terminates, then drain both tasks instead
+            // of leaking them.
             await session.cancel()
             await streamingTask?.value
             feedTask?.cancel()
@@ -859,9 +895,7 @@ final class AppCoordinator: ObservableObject {
     private func startLevelTask() {
         levelTask = Task { [weak self] in
             guard let self else { return }
-            var sawFirstBuffer = false
-            // The first mic buffer flips the HUD from "Warming up…" to
-            // "Listening"; every buffer after drives the live waveform.
+            var sawFirstBuffer = false  // flips HUD from "Warming up…" to "Listening"
             for await level in self.recorder.levels {
                 if Task.isCancelled { break }
                 if !sawFirstBuffer {
@@ -890,10 +924,8 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func reportError(_ error: Error) async {
-        // Full technical detail (codes, selectors) stays in the log; the HUD
-        // gets a short user-facing message, or "Try again" when the cause is
-        // unknown. Unknown errors clear quickly; specific guidance lingers
-        // long enough to read.
+        // Full detail stays in the log; the HUD gets a short message (or
+        // "Try again"), shown longer when there's specific guidance to read.
         log.error("Dictation error: \(error.localizedDescription, privacy: .public)")
         state = .error(error.localizedDescription)
         let mapped = HUDErrorText.message(for: error)

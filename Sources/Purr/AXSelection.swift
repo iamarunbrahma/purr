@@ -5,14 +5,12 @@ import os.log
 // the focused application via the Accessibility API. Powers the
 // "select these words, then speak the edit" interaction.
 //
-// Coverage: native AppKit text fields, NSTextView, most Cocoa apps respect
-// `kAXSelectedTextAttribute`. Notable holdouts: Chrome's web text fields,
-// some Electron-rendered editors. For those we fall back to
-// "select-then-paste-the-replacement" via TextInserter - since pasting
-// always overwrites the selection, the user gets the right behaviour even
-// if AX read of the selection failed (we treat the selection as empty and
-// abort). When AX read succeeds but write doesn't, the same paste fallback
-// kicks in.
+// Coverage: native AppKit text fields, NSTextView, and most Cocoa apps respect
+// `kAXSelectedTextAttribute`. Notable holdouts: Chrome's web text fields and
+// some Electron-rendered editors. Those fall back to paste-over-selection via
+// TextInserter, which overwrites the selection anyway - so a failed AX write
+// still lands correctly (a failed AX *read* aborts, as the selection reads
+// empty).
 enum AXSelection {
     enum Failure: LocalizedError {
         case axDenied
@@ -34,8 +32,8 @@ enum AXSelection {
 
     private static let log = Logger(subsystem: "com.arunbrahma.purr", category: "ax")
 
-    // Returns the currently selected string in the focused element, or
-    // throws if no selection / AX denied / element doesn't expose it.
+    // Throws if AX is denied, nothing is focused, or the element doesn't
+    // expose its selection.
     static func readSelection() throws -> String {
         guard AXIsProcessTrusted() else { throw Failure.axDenied }
 
@@ -55,9 +53,8 @@ enum AXSelection {
         return text
     }
 
-    // Replaces the current selection with the given string. Returns true on
-    // success; false if the focused element doesn't accept AX writes - the
-    // caller should then fall back to a paste-overwrite.
+    // False when the focused element doesn't accept AX writes - the caller
+    // should then fall back to a paste-overwrite.
     @discardableResult
     static func replaceSelection(with replacement: String) -> Bool {
         guard AXIsProcessTrusted() else { return false }

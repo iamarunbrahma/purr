@@ -54,7 +54,7 @@ security fixes.
 | Latest release | Yes |
 | Anything older | No - please update |
 
-Update from the menu bar: **About Purr > Check for Updates**.
+Update from the menu bar: **About Purr** checks for a new version each time you open it.
 
 ## Threat model
 
@@ -65,11 +65,12 @@ Purr's permission set is unusual. You should know what you are trusting.
 To type into arbitrary applications, Purr holds:
 
 - **Microphone** - records your voice
-- **Accessibility** - reads and writes text in other applications' fields
-- **Input Monitoring** with a global `CGEventTap` - observes keystrokes system-wide to
-  detect its hotkeys
+- **Accessibility** - reads and writes text in other applications' fields, and lets a global
+  `CGEventTap` observe keystrokes system-wide to detect its hotkeys
 - **System audio capture** (meeting mode, macOS 14.2+) - records everything your Mac plays,
-  including other participants on a call
+  including other participants on a call. macOS has no public API to check or request this
+  permission, so Purr calls TCC's private `TCCAccessPreflight` and `TCCAccessRequest`,
+  looked up at runtime
 
 **App Sandbox is intentionally disabled.** `CGEventTap` and paste injection do not work
 reliably from a sandboxed process across arbitrary host applications. This is documented in
@@ -93,7 +94,7 @@ The only outbound connections Purr ever makes:
 | --- | --- |
 | Update check | `api.github.com` |
 | Update download | `github.com`, redirecting to `objects.githubusercontent.com` |
-| Gemma 3 4B summary model | `huggingface.co` |
+| Gemma 4 E2B summary model | `huggingface.co` |
 | Parakeet / Whisper / diarizer weights | fetched by FluidAudio and WhisperKit |
 
 The updater refuses any download URL whose host is not exactly `github.com` over HTTPS,
@@ -159,7 +160,7 @@ Weaknesses I already know about:
   Team ID `5JCFRMC367` with `codesign -R` is the fix, and it is not yet in place.
 - **Releases are built by hand on the maintainer's machine.** There is no CI, so there is no
   build provenance or attestation. See [RELEASING.md](RELEASING.md).
-- **`Package.resolved` is not committed**, and Swift dependencies use `from:` version ranges,
+- **`Package.resolved` is not committed**, and only FluidAudio is pinned to an exact version,
   so builds are not byte-for-byte reproducible across machines or time.
 - **Vendored SpeexDSP has not been audited or fuzzed.** `Sources/CEcho` contains SpeexDSP
   compiled from source with warnings suppressed (`-w`) and a hand-written `config.h`. It

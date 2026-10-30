@@ -1,8 +1,8 @@
 # Releasing Purr
 
 The documented, repeatable process for cutting a Purr release. Written down because Purr
-ships a Developer ID signed binary that runs with Accessibility and Input Monitoring
-permissions - the release channel is the most security-sensitive part of the project, and it
+ships a Developer ID signed binary that runs with the Accessibility permission - the
+release channel is the most security-sensitive part of the project, and it
 should not live only in one person's head.
 
 Current release cadence is ad hoc. There is one release line and users update in place
@@ -140,9 +140,9 @@ unless you are certain which one sorts first.
 
 ### 6. Post-release
 
-- Verify the in-app updater sees the new version: **About Purr > Check for Updates** on a
-  machine running the previous release, and let it complete a real in-place upgrade.
-- Confirm Accessibility and Input Monitoring survive the update. Because releases are signed
+- Verify the in-app updater sees the new version: open **About Purr** on a machine running
+  the previous release, and let it complete a real in-place upgrade.
+- Confirm the Accessibility and Microphone grants survive the update. Because releases are signed
   with a stable Developer ID, TCC should carry the grants across versions. Verify this on a
   real machine rather than assuming it - if the bundle ID or signing identity ever changes,
   users must re-grant, and that has to be called out in the release notes.
@@ -166,7 +166,7 @@ Known weaknesses in the process above, listed so nobody has to rediscover them.
 
 - **No CI.** There is no `.github/` directory. Every release is built by hand on the
   maintainer's laptop, which is a single point of compromise for an application holding
-  Input Monitoring permissions. There is no build provenance and no artifact attestation.
+  the Accessibility permission. There is no build provenance and no artifact attestation.
 - **Not reproducible.** `Package.resolved` is gitignored and Swift dependencies float on
   `from:` ranges (`WhisperKit from 0.9.0`, `FluidAudio from 0.8.0`). Two builds from the same
   commit on different days can link different dependency versions. Committing

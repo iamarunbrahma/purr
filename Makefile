@@ -28,18 +28,37 @@ RES_DIR       := $(CONTENTS)/Resources
 FRAMEWORKS_DIR:= $(CONTENTS)/Frameworks
 ENTITLEMENTS  := Resources/$(APP_NAME).entitlements
 INFO_PLIST    := Resources/Info.plist
-# Developer ID code-signing identity and notarization keychain profile. The
-# identity must exist in the login keychain (verify with
-# `security find-identity -p codesigning -v`); the profile is created once with
-# `xcrun notarytool store-credentials`. Override either on the command line.
-DEV_ID         ?= Developer ID Application: Arun Brahma (5JCFRMC367)
+# Developer ID code-signing identity and notarization keychain profile.
+# Defaults to ad-hoc ("-") so `make app` builds and runs on a clean checkout
+# with no certificate in the keychain. For a real release, override DEV_ID
+# with an identity from `security find-identity -p codesigning -v`; the
+# NOTARY_PROFILE keychain profile is created once with
+# `xcrun notarytool store-credentials`.
+DEV_ID         ?= -
 NOTARY_PROFILE ?= purr-app
+# Hardened Runtime (Library Validation) refuses to load an ad-hoc-signed
+# embedded framework at all, even alongside an ad-hoc-signed outer app -
+# https://developer.apple.com/forums/thread/695481 - so it can only be
+# enabled once a real Developer ID identity is signing everything. Ad-hoc
+# local builds skip it entirely and fall back to the legacy, more permissive
+# validation path; notarization (which requires it) always supplies a real
+# DEV_ID via `make dmg`.
+ifeq ($(DEV_ID),-)
+CODESIGN_OPTS :=
+else
+CODESIGN_OPTS := --options runtime --timestamp
+endif
+# Where SwiftPM put the build. Its layout depends on the toolchain (Xcode 27
+# builds into .build/out/Products/Release), so ask SwiftPM instead of assuming
+# one. `$$(...)` runs in the recipe's shell, which gets the DEVELOPER_DIR
+# exported below; make 3.81's $(shell) wouldn't, and could ask another Swift.
+BIN_DIR = $$(swift build -c $(CONFIG) --arch arm64 --show-bin-path)
 # llama.cpp is shipped as an XCFramework binary target. SwiftPM stages
 # the macOS-arm64 slice next to the built executable; we copy that into
 # the bundle's Frameworks/ and add the rpath the executable needs to
 # find it at runtime (the linker's default @loader_path works when the
 # binary sits beside the framework, but the .app layout splits them).
-LLAMA_FRAMEWORK_SRC := $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/llama.framework
+LLAMA_FRAMEWORK_SRC = $(BIN_DIR)/llama.framework
 
 # The @Generable / @Guide macros (FoundationModels) need Xcode's compiler
 # plugin (libFoundationModelsMacros), which the standalone Command Line
@@ -55,8 +74,12 @@ export DEVELOPER_DIR
 app:
 	swift build -c $(CONFIG) --arch arm64
 	@mkdir -p $(MACOS_DIR) $(RES_DIR) $(FRAMEWORKS_DIR)
-	@cp $(BUILD_DIR)/arm64-apple-macosx/$(CONFIG)/$(APP_NAME) $(MACOS_DIR)/$(APP_NAME)
+	@cp "$(BIN_DIR)/$(APP_NAME)" $(MACOS_DIR)/$(APP_NAME)
 	@cp $(INFO_PLIST) $(CONTENTS)/Info.plist
+	@# Legacy package-type marker that every standard .app carries; some macOS
+	@# subsystems still read it. Cheap to include, and a hand-assembled SwiftPM
+	@# bundle omits it by default.
+	@printf 'APPL????' > $(CONTENTS)/PkgInfo
 	@cp Resources/AppIcon.icns $(RES_DIR)/AppIcon.icns
 	@cp Resources/purr_menubar_glyph.pdf $(RES_DIR)/purr_menubar_glyph.pdf
 	@# Embed llama.cpp dynamic framework. -R preserves the Headers ->
@@ -65,16 +88,16 @@ app:
 	@# ambiguous. -p keeps perms/timestamps so the signature stays
 	@# reproducible across builds.
 	@rm -rf $(FRAMEWORKS_DIR)/llama.framework
-	@cp -Rp $(LLAMA_FRAMEWORK_SRC) $(FRAMEWORKS_DIR)/llama.framework
+	@cp -Rp "$(LLAMA_FRAMEWORK_SRC)" $(FRAMEWORKS_DIR)/llama.framework
 	@# Add @executable_path/../Frameworks to the binary's rpath. Quiet if
 	@# already present (re-runs of `make app` would otherwise fail).
 	@install_name_tool -add_rpath @executable_path/../Frameworks $(MACOS_DIR)/$(APP_NAME) 2>/dev/null || true
 	@# Sign the embedded framework first so the nested code is already valid
 	@# when we sign the outer bundle (no --deep: Apple recommends signing
-	@# inside-out for distribution). --options runtime turns on the Hardened
-	@# Runtime that notarization requires; --timestamp adds a secure timestamp.
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
-	@codesign --force --options runtime --timestamp --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
+	@# inside-out for distribution). CODESIGN_OPTS adds Hardened Runtime +
+	@# a secure timestamp only when DEV_ID is a real identity (see above).
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
 	@# Bump the bundle's mtime. macOS keys its icon/LaunchServices cache on the
 	@# bundle modification date; copying a new AppIcon.icns into an existing
 	@# .app leaves the bundle dir mtime stale, so Finder keeps serving the old

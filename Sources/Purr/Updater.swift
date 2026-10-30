@@ -6,32 +6,24 @@ import os.log
 
 // In-app updater backed by GitHub Releases.
 //
-// The install helper waits for our PID to exit, mounts the DMG, verifies
-// the embedded .app's codesign seal, ditto-copies the new bundle over the
-// running one, strips the quarantine xattr, detaches, and relaunches with
-// `open`. ditto (not cp -R) is used because it preserves xattrs/symlinks/
-// resource forks that the bundle relies on for codesign. The codesign
-// gate runs *before* we touch the running app: if the downloaded bundle
-// is corrupted or tampered the helper exits without destroying the install.
+// The install helper waits for our PID to exit, mounts the DMG, verifies the
+// embedded .app's codesign seal, ditto-copies it over the running bundle,
+// strips quarantine, detaches, and relaunches. The codesign gate runs *before*
+// we touch the running app, so a corrupt download cannot destroy the install.
 //
-// Releases are signed with a stable Developer ID (Team 5JCFRMC367), hardened
-// runtime, notarized and stapled - see the Makefile. Because the signing
-// identity is stable across versions, TCC keys off the designated requirement
-// rather than a per-build cdhash, so Accessibility + Input Monitoring grants
-// normally survive an update. They are only lost if the bundle ID or the
-// signing identity changes; the onboarding flow handles that case anyway (it
-// polls and re-registers on appear).
+// Releases are signed with a stable Developer ID (Team 5JCFRMC367), so TCC
+// keys off the designated requirement rather than a per-build cdhash and
+// Accessibility and Microphone grants survive an update. They are lost
+// only if the bundle ID or signing identity changes.
 //
-// Caveat: the helper's codesign gate is NOT pinned to our Team ID. It proves
-// the downloaded bundle carries an intact, valid signature, not that the
-// signature is ours - any bundle signed by any valid Developer ID would pass.
-// Pinning with `codesign -R` against 5JCFRMC367 is the outstanding fix. Until
-// then the SHA-256 sidecar is what ties the download to a release we published.
+// Caveat: the helper's codesign gate is NOT pinned to our Team ID - any bundle
+// with a valid Developer ID signature passes. Pinning with `codesign -R`
+// against 5JCFRMC367 is the outstanding fix; until then the SHA-256 sidecar is
+// what ties the download to a release we published.
 //
-// All public methods are @MainActor — the state is @Published and SwiftUI
-// drives the calls from the main thread anyway. Keeping the class itself
-// non-isolated lets AppDelegate (which can't be @MainActor because main.swift
-// initialises it from a synchronous top-level context) hold a stored property.
+// The class stays non-isolated with @MainActor methods so AppDelegate (which
+// can't be @MainActor because main.swift initialises it from a synchronous
+// top-level context) can hold it as a stored property.
 final class Updater: ObservableObject {
     enum State: Equatable {
         case idle
@@ -49,9 +41,8 @@ final class Updater: ObservableObject {
     private static let releasesAPI = URL(
         string: "https://api.github.com/repos/iamarunbrahma/purr/releases/latest"
     )!
-    // Disambiguation probe for /releases/latest 404s: GitHub returns 404 both
-    // when the repo is gone and when the repo exists but has zero releases.
-    // Hitting the repo root tells the two apart.
+    // Probe for /releases/latest 404s: GitHub returns 404 both when the repo is
+    // gone and when it exists with zero releases. The repo root tells them apart.
     private static let repoAPI = URL(
         string: "https://api.github.com/repos/iamarunbrahma/purr"
     )!
@@ -74,9 +65,6 @@ final class Updater: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 if http.statusCode == 404 {
-                    // /releases/latest is 404 in two distinct cases. Probe the
-                    // repo endpoint to tell them apart so a deleted/renamed
-                    // repo doesn't masquerade as "you're up to date".
                     state = try await resolve404()
                     return
                 }
@@ -98,16 +86,9 @@ final class Updater: ObservableObject {
             guard let dmgURL = URL(string: asset.browserDownloadURL),
                 Self.isTrustedDownloadHost(dmgURL)
             else {
-                // The release JSON named an asset URL we don't trust. Refuse
-                // to download. URLSession follows the github.com → CDN
-                // redirect over HTTPS internally; we only need to vouch for
-                // the URL we actually hand to it.
                 state = .error("Update download URL is not a trusted GitHub host.")
                 return
             }
-            // Optional companion <DMG>.sha256 sidecar. When present the
-            // download is hash-checked before install; when absent the
-            // helper's codesign gate is the only integrity check.
             let sha256URL = Self.findSHA256AssetURL(matching: asset.name, in: release.assets)
             if Self.compareVersions(remoteVersion, currentVersion) <= 0 {
                 state = .upToDate
@@ -125,9 +106,21 @@ final class Updater: ObservableObject {
         }
     }
 
-    // Repo exists and just hasn't published a release yet -> treat as up to
-    // date. Repo is genuinely missing -> surface that so a renamed/deleted
-    // repo can't silently look like "no updates".
+    // About calls this each time it opens. The updater lives as long as the
+    // app, so otherwise a reopened About keeps showing its first result. A
+    // check, download or install that's under way is left alone.
+    @MainActor
+    func checkForUpdatesUnlessBusy() async {
+        switch state {
+        case .checking, .downloading, .readyToInstall, .installing:
+            return
+        case .idle, .upToDate, .available, .error:
+            await checkForUpdates()
+        }
+    }
+
+    // Repo present but releaseless -> up to date. Repo missing -> surface it,
+    // so a renamed/deleted repo can't silently look like "no updates".
     private func resolve404() async throws -> State {
         var request = URLRequest(url: Self.repoAPI)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -145,8 +138,8 @@ final class Updater: ObservableObject {
         }
     }
 
-    // Each phase already publishes its own state transition, so the UI can
-    // still render progress / errors without an extra button press.
+    // Each phase publishes its own state transition, so chaining them still
+    // renders progress and errors without a second button press.
     @MainActor
     func updatePurr() async {
         await downloadUpdate()
@@ -173,12 +166,9 @@ final class Updater: ObservableObject {
         downloader = dl
         do {
             let path = try await dl.download(from: dmgURL)
-            // Hash-check before the install helper runs. The helper's
-            // codesign --verify is unpinned, so it only proves the bundle in
-            // the DMG carries *some* valid signature, not that it carries
-            // ours. The SHA-256 sidecar is what ties the download to a release
-            // we actually published, so its absence is fatal: refuse to
-            // install rather than installing an unverified binary.
+            // The helper's codesign gate is unpinned, so the sidecar is the
+            // only thing tying this download to a release we published. Its
+            // absence is fatal: refuse rather than install an unverified binary.
             guard let sha256URL else {
                 try? FileManager.default.removeItem(at: path)
                 log.error(
@@ -312,13 +302,10 @@ final class Updater: ObservableObject {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/bin/sh")
             task.arguments = [scriptPath, String(pid), dmgPath.path, appPath]
-            // Detach: the helper survives our termination because it's not a
-            // child of NSApp (Process spawns it as a child of launchd-adjacent
-            // group via run()), and we don't waitUntilExit.
+            // No waitUntilExit: the helper has to outlive our termination.
             try task.run()
 
-            // Tiny delay so the helper has a chance to start its kill -0 loop
-            // before we terminate. 200ms is more than enough.
+            // Let the helper reach its kill -0 loop before we terminate.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 NSApp.terminate(nil)
             }
@@ -333,20 +320,17 @@ final class Updater: ObservableObject {
     private func writeInstallScript() throws -> String {
         // Args: $1=parent_pid  $2=dmg_path  $3=app_bundle_path
         //
-        // ditto preserves symlinks, ACLs, xattrs, and resource forks - cp -R
-        // drops some of those, breaking ad-hoc signature seals.
+        // ditto preserves the symlinks, ACLs, xattrs, and resource forks that
+        // cp -R drops, which would break the signature seal.
         // hdiutil -nobrowse keeps Finder from popping the volume; -noverify
-        // skips the integrity-check delay (we're about to overwrite an app
-        // bundle anyway).
-        // codesign --verify --deep --strict mirrors what Gatekeeper does
-        // (per Apple TN2206) and detects any tampering or truncation of the
-        // downloaded bundle. We run it BEFORE rm -rf'ing the live install
-        // so a bad DMG cannot brick the app. Note this is an unpinned check:
-        // add -R "anchor apple generic and certificate leaf[subject.OU] =
-        // 5JCFRMC367" to also require the bundle be signed by us.
-        // xattr -dr com.apple.quarantine prevents the "Are you sure you want
-        // to open?" prompt that LaunchServices attaches to anything fetched
-        // by URLSession; only stripped after the codesign gate passes.
+        // skips the integrity-check delay.
+        // codesign --verify --deep --strict mirrors Gatekeeper (Apple TN2206)
+        // and runs BEFORE rm -rf'ing the live install so a bad DMG cannot brick
+        // the app. It is unpinned: add -R "anchor apple generic and certificate
+        // leaf[subject.OU] = 5JCFRMC367" to also require our own signature.
+        // xattr -dr com.apple.quarantine prevents the "Are you sure you want to
+        // open?" prompt LaunchServices attaches to URLSession downloads; only
+        // stripped once the codesign gate passes.
         let script = """
             #!/bin/sh
             set -u
@@ -399,21 +383,19 @@ final class Updater: ObservableObject {
         return url.path
     }
 
-    // Trust boundary for the asset URL we pull from the GitHub release JSON.
-    // The browser_download_url field is attacker-controllable if the API
-    // response is ever poisoned, so we refuse to feed an arbitrary URL into
-    // the downloader → install flow. Releases live on github.com (which then
-    // 302-redirects to objects.githubusercontent.com); URLSession follows
-    // that redirect over HTTPS and ATS rejects plaintext, so vouching for
-    // the initial host is sufficient.
+    // Trust boundary for asset URLs taken from the release JSON:
+    // browser_download_url is attacker-controllable if the API response is ever
+    // poisoned, so an arbitrary URL must not reach the download → install flow.
+    // Vouching for the initial host suffices - URLSession follows the
+    // github.com → CDN redirect over HTTPS and ATS rejects plaintext.
     private static func isTrustedDownloadHost(_ url: URL) -> Bool {
         guard url.scheme == "https" else { return false }
         guard let host = url.host?.lowercased() else { return false }
         return host == "github.com"
     }
 
-    // Lexicographic numeric compare on dot-separated parts. Missing parts
-    // count as 0 so "1.2" == "1.2.0". Returns -1 / 0 / 1.
+    // Numeric compare on dot-separated parts, returning -1 / 0 / 1. Missing
+    // parts count as 0, so "1.2" == "1.2.0".
     static func compareVersions(_ a: String, _ b: String) -> Int {
         let aParts = a.split(separator: ".").map { Int($0) ?? 0 }
         let bParts = b.split(separator: ".").map { Int($0) ?? 0 }
@@ -453,9 +435,8 @@ private struct GitHubRelease: Decodable {
 
 // MARK: - Download with progress
 
-// URLSessionDownloadTask exposes progress via a delegate; AsyncBytes iterates
-// byte-at-a-time which is too slow for a 16MB DMG. The delegate pattern is
-// the canonical way to get chunked progress callbacks.
+// Delegate rather than AsyncBytes: byte-at-a-time iteration is far too slow
+// for a 16MB DMG, and the delegate is how URLSession reports chunked progress.
 private final class UpdateDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let destination: URL
     private let onProgress: (Double) -> Void

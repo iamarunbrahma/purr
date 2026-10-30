@@ -1,4 +1,6 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.2
+// 6.2 for dependency traits (see FluidAudio below); the language mode stays
+// Swift 5, set at the bottom.
 import PackageDescription
 
 let package = Package(
@@ -12,10 +14,21 @@ let package = Package(
         // FluidAudio - Parakeet TDT v3 batch (multilingual, 10× faster than
         // Whisper Large V3 on Apple Silicon) plus Parakeet EOU streaming
         // (real-time chunked ASR with end-of-utterance detection).
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.8.0"),
+        //
+        // Pinned exactly. Package.resolved isn't committed, so a version range
+        // resolves to whatever is newest on every fresh clone, and FluidAudio
+        // has broken this build from inside one before: 0.15.5 removed the
+        // `DownloadUtils` namespace, and tag v0.15.8 is the "v0.16.0" release.
+        // Bump by hand after running the transcripts through both versions.
+        //
+        // `traits: []` leaves out the NeMo text normalizer, a ~9 MB Rust
+        // library FluidAudio links by default for its TTS and inverse text
+        // normalization, neither of which Purr uses.
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.7", traits: []),
     ],
     targets: [
-        // llama.cpp Apple XCFramework - powers Gemma 3 4B meeting summaries
+        // llama.cpp Apple XCFramework - powers Gemma 4 E2B meeting summaries
         // on macOS 14-25 where Apple Foundation Models isn't available.
         // Pinned to a specific upstream tag so the SHA256 is stable; bump by
         // hand when picking up a new release (the framework ships ~200 MB
@@ -53,5 +66,8 @@ let package = Package(
                 .enableUpcomingFeature("BareSlashRegexLiterals")
             ]
         ),
-    ]
+    ],
+    // Tools 6.x would otherwise switch to the Swift 6 language mode and its
+    // strict concurrency checking, which Purr hasn't been migrated to.
+    swiftLanguageModes: [.v5]
 )

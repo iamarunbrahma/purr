@@ -1,22 +1,19 @@
 import Foundation
 
-// The languages Whisper can translate to English from. `code` is the exact
-// identifier Whisper's tokenizer expects - it's handed verbatim to
-// DecodingOptions.language. The empty code is the sentinel for auto-detect.
+// The languages Whisper can translate to English from. `code` is handed verbatim
+// to DecodingOptions.language, so it must be the exact identifier Whisper's
+// tokenizer expects; the empty code is the sentinel for auto-detect.
 //
 // Pinning a source language matters most for short utterances: Whisper's
-// audio-based language detection is unreliable on a clip of only a second
-// or two, so a 1.5 s phrase can be misidentified and mistranslated. Telling
-// it the language up front skips detection entirely.
-struct WhisperLanguage: Identifiable, Hashable {
+// audio-based detection is unreliable on a clip of a second or two, so a 1.5 s
+// phrase can be misidentified and mistranslated. Naming the language skips it.
+struct WhisperLanguage: LanguageOption {
     let code: String
     let name: String
 
     var id: String { code }
 
-    // Auto-detect is the default: Whisper identifies the spoken language
-    // itself. Represented by an empty code so SettingsStore can persist it
-    // as a plain string.
+    // The default. Empty code so SettingsStore can persist it as a plain string.
     static let autoDetect = WhisperLanguage(code: "", name: "Auto-detect")
 
     // All 100 languages Whisper large-v3 supports, alphabetical by name,
@@ -125,15 +122,14 @@ struct WhisperLanguage: Identifiable, Hashable {
         WhisperLanguage(code: "yo", name: "Yoruba"),
     ]
 
-    // Resolves a persisted code back to a language; unknown / empty codes
-    // fall back to auto-detect so a stale stored value is never fatal.
+    // Unknown / empty codes fall back to auto-detect so a stale persisted value is
+    // never fatal.
     static func named(_ code: String) -> WhisperLanguage {
         all.first { $0.code == code } ?? autoDetect
     }
 
-    // Ranked, prefix-first matching for the Settings search field.
-    // Auto-detect is excluded from results - an empty field already
-    // represents auto-detect, so it would only confuse the list.
+    // Ranked, prefix-first matching for the Settings search field. Auto-detect is
+    // excluded - an empty field already represents it.
     static func matching(_ query: String) -> [WhisperLanguage] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return all.filter { !$0.code.isEmpty } }

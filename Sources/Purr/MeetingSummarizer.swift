@@ -5,27 +5,23 @@ import os.log
 import FoundationModels
 #endif
 
-// Generates Minutes of Meeting from a transcript Markdown file.
-// Output is a sidecar "<transcript>.summary.md" so the transcript stays
-// untouched and a re-run only rewrites the summary.
+// Generates Minutes of Meeting from a transcript Markdown file. Output is a
+// sidecar "<transcript>.summary.md" so the transcript stays untouched and a
+// re-run only rewrites the summary.
 //
 // Two backends, picked at call time:
 //
-//   * Apple Foundation Models (macOS 26+, Apple Intelligence enabled and
-//     a supported language). Built-in, no download, ~3 B params,
-//     ~30 tok/s. Preferred when available.
-//   * Gemma 3 4B Instruct (Q4_K_M GGUF) via llama.cpp. ~2.49 GB on disk,
-//     fetched from Hugging Face on first use. Used on macOS < 26, when
-//     Apple Intelligence is unavailable, or when the user explicitly
-//     picks it.
+//   * Apple Foundation Models (macOS 26+, Apple Intelligence enabled and a
+//     supported language). Built-in, no download or model-load cost.
+//     Preferred when available.
+//   * Gemma 4 E2B Instruct (Q4_0 GGUF) via llama.cpp. ~3.35 GB on disk,
+//     fetched on first use, for macOS < 26, when Apple Intelligence is
+//     unavailable, or when the user picks it. Lazy-loads a single
+//     LlamaSession reused across summaries, with a bounded KV cache so long
+//     meetings stay within memory.
 //
-// The Apple Intelligence path takes no model-load cost. The Gemma path
-// lazy-loads a single LlamaSession (reused across summaries) and runs
-// with a bounded KV cache so very long meetings stay within memory.
-//
-// A single `MeetingSummarizer.shared` instance is used app-wide so
-// download-then-summarize and Settings' delete button operate on the
-// same loaded model.
+// The shared instance is used app-wide so download-then-summarize and
+// Settings' delete button operate on the same loaded model.
 @MainActor
 final class MeetingSummarizer {
     static let shared = MeetingSummarizer()
@@ -64,32 +60,30 @@ final class MeetingSummarizer {
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "summarizer")
 
-    // Hard ceiling on transcript characters fed to the model. Longer
-    // meetings get a head/tail truncation (the most useful content for a
-    // summary lives at the start and the end). 24K chars ≈ 6K tokens,
-    // which leaves room for the system prompt and a 1000-token response
-    // inside the 4096-token context window.
+    // Hard ceiling on transcript characters fed to the model; longer meetings
+    // get a head/tail truncation. 24K chars ≈ 6K tokens of English, leaving
+    // room for the system prompt and a 1000-token response in Gemma's
+    // 8192-token window. Apple FM's 4096 tokens take it in pieces.
     private static let maxTranscriptChars = 24_000
 
-    // A transcript whose body has fewer words than this is treated as too
-    // short to summarize. Below it there is nothing to minute, and a model
-    // handed such a transcript fabricates a plausible meeting out of noise.
-    // ~20 words is roughly 10 seconds of speech - shorter than any real
-    // meeting worth a summary.
+    // ~2,500 tokens of English per Apple FM piece, leaving the rest of its
+    // window for the instructions, the MeetingMinutes schema and the response.
+    private static let applePieceChars = 8_000
+
+    // A shorter transcript body is treated as too short to summarize: there is
+    // nothing to minute, and a model handed one fabricates a plausible meeting
+    // out of noise. ~20 words is roughly 10 seconds of speech.
     private static let minWordsToSummarize = 20
 
-    // Maximum wall-clock time we let the LLM produce a response.
-    // Generous (5 min) so a hot run on a long meeting still finishes;
-    // longer than that almost always means the model has wandered into a
-    // repetition loop and we should bail.
+    // Generous (5 min) so a hot run on a long meeting still finishes; beyond
+    // that the model has almost always wandered into a repetition loop.
     private static let generationTimeout: Duration = .seconds(300)
 
     private init() {}
 
-    // Releases the in-memory LlamaSession owned by the shared runtime.
-    // MUST run before deleting the on-disk weights — otherwise the ~2.5 GB
-    // session stays resident and the next generation reuses a session
-    // pointing at deleted files.
+    // MUST run before deleting the on-disk weights — otherwise the ~3.3 GB
+    // session stays resident and the next generation reuses a session pointing
+    // at deleted files.
     func unload() async {
         log.info("Llama unload: releasing the shared runtime session.")
         await LlamaRuntime.shared.unload()
@@ -98,17 +92,12 @@ final class MeetingSummarizer {
     // MARK: - Backend availability
 
     // The chosen path for *this device right now*. Honours the user's
-    // preference when both backends are usable; otherwise falls back
-    // along a strict priority:
+    // preference when both backends are usable, otherwise falls back along a
+    // strict priority: Apple FM, then Gemma if downloaded, then .none (the
+    // caller refuses to summarize).
     //
-    //   1. Apple FM (preferred when available - macOS 26+, AI on,
-    //      locale supported via supportsLocale).
-    //   2. llama.cpp + Gemma if downloaded.
-    //   3. .none → caller refuses to summarize.
-    //
-    // We NEVER return .llamaCpp(installed: false) - the caller would
-    // then trigger a silent multi-GB download from a meeting-stop code
-    // path, which is exactly the surprise we refuse to ship.
+    // NEVER returns .llamaCpp(installed: false) - the caller would then trigger
+    // a silent multi-GB download from a meeting-stop code path.
     static func currentBackend() -> Backend {
         let installed = LLMModelManager.isInstalled()
         let appleAvailable: Bool = {
@@ -138,14 +127,9 @@ final class MeetingSummarizer {
         }
     }
 
-    // True when every gate Apple FM cares about is satisfied:
-    //
-    //   1. macOS 26+ (compile-time @available + runtime check).
-    //   2. SystemLanguageModel reports `.available` - device hardware
-    //      is eligible AND Apple Intelligence is on AND the on-device
-    //      model has finished downloading.
-    //   3. SystemLanguageModel.default.supportsLocale() == true - the
-    //      current app/system locale is one Apple FM understands.
+    // True when every Apple FM gate is satisfied: macOS 26+, availability
+    // `.available` (eligible hardware, Apple Intelligence on, model downloaded),
+    // and a locale Apple FM understands.
     @available(macOS 26.0, *)
     static var appleFoundationAvailable: Bool {
         #if canImport(FoundationModels)
@@ -163,9 +147,8 @@ final class MeetingSummarizer {
     func summarize(transcriptURL: URL) async throws -> URL {
         let raw = try String(contentsOf: transcriptURL, encoding: .utf8)
 
-        // Guard: a recording with almost no speech is not a meeting worth
-        // minuting. Handed such a transcript the model invents a meeting,
-        // so write an honest stub instead of running a backend.
+        // Handed a near-empty transcript the model invents a meeting, so write
+        // an honest stub instead of running a backend.
         let wordCount = Self.transcriptWordCount(in: raw)
         if wordCount < Self.minWordsToSummarize {
             log.info(
@@ -178,7 +161,7 @@ final class MeetingSummarizer {
             return outputURL
         }
 
-        let transcript = Self.truncate(transcript: raw)
+        let transcript = Self.truncate(transcript: raw, maxChars: Self.maxTranscriptChars)
         let roster = Self.speakerRoster(in: raw)
         if transcript.count != raw.count {
             log.info(
@@ -200,24 +183,21 @@ final class MeetingSummarizer {
                     backendLabel = "Apple Foundation Model"
                     break
                 } catch {
-                    // Apple FM has two soft failures we recover from rather than
-                    // surface raw:
-                    //   * locale — it rejects the device language at generation
-                    //     time even when availability said .available.
-                    //   * content block — the safety guardrail false-positives on
-                    //     benign material (e.g. defense news). Under guided
-                    //     generation this arrives as .guardrailViolation OR
-                    //     .refusal, so we treat both the same.
-                    // For either, fall back to Gemma when it is installed;
-                    // otherwise surface an honest, specific reason.
+                    // Two soft failures are recovered from rather than surfaced
+                    // raw, both falling back to Gemma when it is installed:
+                    //   * locale — Apple FM rejects the device language at
+                    //     generation time even when availability said
+                    //     .available.
+                    //   * content block — the safety guardrail false-positives
+                    //     on benign material. Under guided generation it
+                    //     arrives as .guardrailViolation OR .refusal.
                     //
                     // Classify via the TYPED error, never String(describing:):
-                    // for a bridged NSError that yields a generic "operation
-                    // couldn't be completed (…GenerationError error N.)" form
-                    // with neither the case name nor the reason, so the previous
-                    // string match silently missed every guardrail trip. The
-                    // discriminating signal lives in the typed case (and, as a
-                    // defensive fallback, localizedDescription).
+                    // on a bridged NSError that yields a generic "operation
+                    // couldn't be completed (…GenerationError error N.)" with
+                    // neither case name nor reason, so a string match silently
+                    // misses every guardrail trip. localizedDescription is only
+                    // a defensive fallback.
                     let isLocale: Bool
                     let isContentBlock: Bool
                     if let generationError = error as? LanguageModelSession.GenerationError {
@@ -246,8 +226,8 @@ final class MeetingSummarizer {
                         log.info(
                             "Apple FM \(kind, privacy: .public) rejection; retrying with Gemma fallback."
                         )
-                        summary = try await runLlamaCpp(transcript: transcript)
-                        backendLabel = "Gemma 3 4B Instruct (Q4_K_M, \(kind) fallback)"
+                        summary = try await runLlamaCpp(rawTranscript: raw)
+                        backendLabel = "Gemma 4 E2B Instruct (Q4_0, \(kind) fallback)"
                         break
                     }
                     if isLocale { throw SummarizerError.unsupportedLocale }
@@ -262,13 +242,12 @@ final class MeetingSummarizer {
             throw SummarizerError.backendUnavailable
 
         case .llamaCpp(let installed):
-            // Defence in depth: currentBackend() already filters out the
-            // uninstalled case, but if a future change ever leaks one
-            // through, refuse rather than triggering a 2.5 GB download
-            // from a meeting-stop code path.
+            // currentBackend() already filters out the uninstalled case; if one
+            // ever leaks through, refuse rather than triggering a 3.3 GB
+            // download from a meeting-stop code path.
             guard installed else { throw SummarizerError.backendUnavailable }
-            summary = try await runLlamaCpp(transcript: transcript)
-            backendLabel = "Gemma 3 4B Instruct (Q4_K_M, llama.cpp)"
+            summary = try await runLlamaCpp(rawTranscript: raw)
+            backendLabel = "Gemma 4 E2B Instruct (Q4_0, llama.cpp)"
 
         case .none:
             throw SummarizerError.backendUnavailable
@@ -290,31 +269,167 @@ final class MeetingSummarizer {
 
     // MARK: - Backend implementations
 
+    // Apple FM's whole 4096-token window - instructions, schema, transcript
+    // and response - holds about ten minutes of meeting. Past that, as Apple's
+    // TN3193 recommends, the transcript is summarized in pieces, each in a
+    // fresh session, and the pieces' minutes are combined.
     @available(macOS 26.0, *)
     private func runAppleFoundation(transcript: String, roster: [String]) async throws -> String {
         #if canImport(FoundationModels)
-        let session = LanguageModelSession(instructions: { Instructions(appleInstructions) })
-        let prompt = appleUserPrompt(transcript: transcript, roster: roster)
-        // Guided generation: the model fills a `MeetingMinutes` value via
-        // constrained decoding rather than emitting free-form Markdown. The
-        // output shape is the Swift type's schema, not a template in the
-        // prompt, so the model structurally cannot echo a placeholder block
-        // back as content - the failure mode of every prompt-only attempt.
-        // Greedy sampling keeps the summary deterministic and faithful.
-        let response = try await session.respond(
-            to: prompt,
-            generating: MeetingMinutes.self,
-            options: GenerationOptions(sampling: .greedy)
-        )
-        return Self.renderMarkdown(response.content)
+        let pieces = Self.pieces(of: transcript, maxChars: Self.applePieceChars)
+        var parts: [MeetingMinutes] = []
+        for piece in pieces {
+            parts += try await appleMinutes(
+                transcript: piece, roster: roster, isExcerpt: pieces.count > 1, depth: 0)
+        }
+        guard let first = parts.first else { throw SummarizerError.emptyResponse }
+        guard parts.count > 1 else { return Self.renderMarkdown(Self.merged(parts, tldr: first.tldr)) }
+        log.info("Apple FM summarized the transcript in \(parts.count, privacy: .public) pieces.")
+        return Self.renderMarkdown(await combine(parts))
         #else
         throw SummarizerError.backendUnavailable
         #endif
     }
 
-    // System instructions for the Apple FM path. The output *shape* is the
-    // `MeetingMinutes` schema (guided generation), so these instructions only
-    // govern behaviour - what to extract, what never to invent - not format.
+    #if canImport(FoundationModels)
+    // A piece that still overflows - denser scripts run closer to a token per
+    // character - is split in half until it fits.
+    @available(macOS 26.0, *)
+    private func appleMinutes(
+        transcript: String, roster: [String], isExcerpt: Bool, depth: Int
+    ) async throws -> [MeetingMinutes] {
+        let session = LanguageModelSession(instructions: { Instructions(appleInstructions) })
+        let prompt = appleUserPrompt(transcript: transcript, roster: roster, isExcerpt: isExcerpt)
+        do {
+            // Guided generation: the model fills a `MeetingMinutes` value via
+            // constrained decoding, so the output shape is the Swift type's
+            // schema rather than a prompt template. It structurally cannot echo
+            // a placeholder block back as content - the failure mode of every
+            // prompt-only attempt. Greedy sampling keeps the summary
+            // deterministic.
+            let response = try await session.respond(
+                to: prompt,
+                generating: MeetingMinutes.self,
+                options: GenerationOptions(sampling: .greedy)
+            )
+            return [response.content]
+        } catch let error as LanguageModelSession.GenerationError {
+            guard case .exceededContextWindowSize = error, depth < 3 else { throw error }
+            let halves = Self.pieces(of: transcript, maxChars: transcript.count / 2 + 1)
+            guard halves.count > 1 else { throw error }
+            log.info(
+                "Apple FM context exceeded on a \(transcript.count, privacy: .public)-char piece; splitting it in \(halves.count, privacy: .public)."
+            )
+            var parts: [MeetingMinutes] = []
+            for half in halves {
+                parts += try await appleMinutes(
+                    transcript: half, roster: roster, isExcerpt: true, depth: depth + 1)
+            }
+            return parts
+        }
+    }
+
+    // The TL;DRs are condensed into one by a final short pass, or joined if
+    // that fails.
+    @available(macOS 26.0, *)
+    private func combine(_ parts: [MeetingMinutes]) async -> MeetingMinutes {
+        let tldrs = parts.map { $0.tldr.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var tldr = tldrs.joined(separator: " ")
+        do {
+            let numbered = tldrs.enumerated().map { "Part \($0.offset + 1): \($0.element)" }
+            let response = try await LanguageModelSession().respond(
+                to: """
+                    These summarize consecutive parts of one meeting, in order. Write \
+                    a two or three sentence overview of the whole meeting using only \
+                    facts stated in them. Reply with the overview only.
+
+                    \(numbered.joined(separator: "\n\n"))
+                    """,
+                options: GenerationOptions(sampling: .greedy)
+            )
+            let condensed = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !condensed.isEmpty { tldr = condensed }
+        } catch {
+            log.error(
+                "Apple FM TL;DR merge failed (\(error.localizedDescription, privacy: .public)); joining the pieces' TL;DRs."
+            )
+        }
+        return Self.merged(parts, tldr: tldr)
+    }
+
+    // Lists concatenate in meeting order, dropping repeats - across pieces,
+    // and within one, where a list the model looped on holds the same item
+    // until its cap. An action item repeated with another owner is a repeat.
+    @available(macOS 26.0, *)
+    private static func merged(_ parts: [MeetingMinutes], tldr: String) -> MeetingMinutes {
+        func key(_ text: String) -> String {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        func unique(_ lists: [[String]]) -> [String] {
+            var seen = Set<String>()
+            return lists.joined().filter { seen.insert(key($0)).inserted }
+        }
+        var seenTasks = Set<String>()
+        return MeetingMinutes(
+            tldr: tldr,
+            keyDecisions: unique(parts.map(\.keyDecisions)),
+            actionItems: parts.flatMap(\.actionItems).filter { seenTasks.insert(key($0.task)).inserted },
+            topicsDiscussed: unique(parts.map(\.topicsDiscussed)),
+            openQuestions: unique(parts.map(\.openQuestions))
+        )
+    }
+    #endif
+
+    // Splits at utterance (paragraph) boundaries into pieces of at most
+    // `maxChars`. An utterance longer than that is cut at a space, and each
+    // continuation keeps the speaker label.
+    private static func pieces(of transcript: String, maxChars: Int) -> [String] {
+        var units: [String] = []
+        for paragraph in transcript.components(separatedBy: "\n\n") where !paragraph.isEmpty {
+            let label =
+                paragraph.hasPrefix("**")
+                ? paragraph.range(of: ":** ").map { String(paragraph[..<$0.upperBound]) } ?? ""
+                : ""
+            var lead = ""
+            var rest = paragraph[...]
+            while lead.count + rest.count > maxChars {
+                let window = rest.prefix(max(maxChars - lead.count, 1))
+                guard let cut = window.lastIndex(of: " "), cut > rest.startIndex else { break }
+                units.append(lead + rest[..<cut])
+                rest = rest[cut...].drop(while: { $0 == " " })
+                lead = label
+            }
+            units.append(lead + rest)
+        }
+        func pack(closingAt target: Int) -> [String] {
+            var pieces: [String] = []
+            var current = ""
+            var currentCount = 0
+            for unit in units {
+                let unitCount = unit.count
+                if currentCount > 0, currentCount >= target || currentCount + 2 + unitCount > maxChars {
+                    pieces.append(current)
+                    current = ""
+                    currentCount = 0
+                }
+                current += currentCount == 0 ? unit : "\n\n" + unit
+                currentCount += currentCount == 0 ? unitCount : 2 + unitCount
+            }
+            if currentCount > 0 { pieces.append(current) }
+            return pieces
+        }
+        // Full pieces can leave a tail of a line or two, and summarizing that
+        // alone spends a model call on no context - so repack to even shares.
+        let full = pack(closingAt: maxChars)
+        guard full.count > 1 else { return full }
+        let even = pack(closingAt: full.reduce(0) { $0 + $1.count } / full.count)
+        return even.count == full.count ? even : full
+    }
+
+    // The output *shape* comes from the `MeetingMinutes` schema, so these
+    // instructions govern only behaviour - what to extract, what never to
+    // invent - not format.
     private var appleInstructions: String {
         """
         You generate meeting minutes from a transcript that has speaker labels.
@@ -327,14 +442,17 @@ final class MeetingSummarizer {
         """
     }
 
-    // The Apple FM user turn: the speaker-roster constraint, a one-line
-    // directive, and the transcript. The output shape is the MeetingMinutes
-    // schema (guided generation), so the user turn carries no format template.
-    private func appleUserPrompt(transcript: String, roster: [String]) -> String {
+    // The speaker-roster constraint, a one-line directive, and the transcript.
+    // Guided generation supplies the shape, so no format template here.
+    private func appleUserPrompt(transcript: String, roster: [String], isExcerpt: Bool) -> String {
         let constraint = Self.rosterConstraint(roster)
         let header = constraint.isEmpty ? "" : "\(constraint)\n\n"
+        let directive =
+            isExcerpt
+            ? "Summarize this excerpt from a longer meeting transcript."
+            : "Summarize the following meeting transcript."
         return """
-            \(header)Summarize the following meeting transcript.
+            \(header)\(directive)
 
             Transcript:
             \"\"\"
@@ -344,9 +462,8 @@ final class MeetingSummarizer {
     }
 
     #if canImport(FoundationModels)
-    // Renders the structured minutes into the Markdown sidecar body. Empty
-    // collections become `_None._` here, in Swift - the model never sees a
-    // template, so it cannot fabricate placeholder content to fill one.
+    // Empty collections become `_None._` here, in Swift - the model never sees
+    // a template, so it cannot fabricate placeholder content to fill one.
     @available(macOS 26.0, *)
     private static func renderMarkdown(_ minutes: MeetingMinutes) -> String {
         let tldr = minutes.tldr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -401,12 +518,17 @@ final class MeetingSummarizer {
     }
     #endif
 
-    // Distinct speaker labels that actually appear in the transcript, in order
-    // of first appearance. Drives the "do not invent speakers" constraint.
+    // Distinct speaker labels in order of first appearance. Drives the "do not
+    // invent speakers" constraint, so it must include You: a roster without
+    // the local user leaves the model no owner for their own action items,
+    // and under greedy decoding it loops through the Speaker N labels until
+    // the context window overflows. Without diarized labels, one label can
+    // stand for several people ("Remote", or everyone in the room as "You"),
+    // so there's no roster at all.
     static func speakerRoster(in transcript: String) -> [String] {
         var roster: [String] = []
         transcript.enumerateLines { line, _ in
-            guard line.hasPrefix("**Speaker "), let close = line.range(of: ":**") else {
+            guard line.hasPrefix("**"), let close = line.range(of: ":**") else {
                 return
             }
             let label = String(
@@ -415,11 +537,11 @@ final class MeetingSummarizer {
                 roster.append(label)
             }
         }
-        return roster
+        return roster.contains { $0.hasPrefix("Speaker ") } ? roster : []
     }
 
-    // One sentence pinning the model to the real speaker set. Empty when the
-    // transcript carries no speaker labels (the no-diarization fallback).
+    // Pins the model to the real speaker set. Empty when the transcript carries
+    // no speaker labels (the no-diarization fallback).
     private static func rosterConstraint(_ roster: [String]) -> String {
         guard !roster.isEmpty else { return "" }
         let noun = roster.count == 1 ? "speaker" : "speakers"
@@ -430,8 +552,7 @@ final class MeetingSummarizer {
     }
 
     // Word count of the transcript body - everything after the Markdown
-    // header's `---` rule. Drives the too-short-to-summarize guard, and
-    // works whether or not the transcript carries `**Speaker N:**` labels.
+    // header's `---` rule - with or without `**Speaker N:**` labels.
     static func transcriptWordCount(in transcript: String) -> Int {
         let body: Substring
         if let separator = transcript.range(of: "\n---\n") {
@@ -442,14 +563,45 @@ final class MeetingSummarizer {
         return body.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).count
     }
 
-    private func runLlamaCpp(transcript: String) async throws -> String {
+    // The 24K-character cap assumes English at ~4 characters a token, and
+    // denser scripts overrun the context window. A prompt that doesn't fit is
+    // re-cut from the raw transcript in proportion to the overshoot.
+    private func runLlamaCpp(rawTranscript raw: String) async throws -> String {
+        var maxChars = Self.maxTranscriptChars
+        var attempt = 1
+        while true {
+            let transcript = Self.truncate(transcript: raw, maxChars: maxChars)
+            do {
+                return Self.uncheckActionItems(try await generateWithWatchdog(transcript: transcript))
+            } catch LlamaSession.LlamaError.promptTooLong(let tokens, let budget) {
+                guard attempt < 3 else {
+                    throw SummarizerError.generationFailed(
+                        LlamaSession.LlamaError.promptTooLong(tokens: tokens, budget: budget))
+                }
+                attempt += 1
+                // 5% under the proportional cut absorbs the prompt's fixed overhead.
+                maxChars = transcript.count * budget / tokens * 95 / 100
+                log.info(
+                    "Gemma prompt is \(tokens, privacy: .public) tokens, \(budget, privacy: .public) fit; retrying with the transcript cut to \(maxChars, privacy: .public) chars."
+                )
+            }
+        }
+    }
+
+    // Gemma 4 E2B tends to tick its action-item boxes ("- [x]"), but nothing
+    // said in a meeting completes one, so they're reset to the "- [ ]" the
+    // prompt asks for.
+    private static func uncheckActionItems(_ markdown: String) -> String {
+        markdown.replacingOccurrences(
+            of: #"(?m)^(\s*[-*+]\s+)\[[xX]\]"#, with: "$1[ ]", options: .regularExpression)
+    }
+
+    private func generateWithWatchdog(transcript: String) async throws -> String {
         let prompt = chatPrompt(transcript: transcript)
 
-        // Run the generation against a timeout. LlamaRuntime serialises the
-        // shared session and runs the decode off the main thread; cancelling
-        // `work` makes LlamaSession.generate throw .cancelled at the next
-        // sampling step. A corrupt/missing GGUF surfaces as modelLoadFailed,
-        // kept distinct from a generation failure.
+        // Cancelling `work` makes LlamaSession.generate throw .cancelled at the
+        // next sampling step. A corrupt/missing GGUF surfaces as
+        // modelLoadFailed, kept distinct from a generation failure.
         let work = Task<String, Error> {
             do {
                 return try await LlamaRuntime.shared.generate(
@@ -485,6 +637,8 @@ final class MeetingSummarizer {
                     ))
             }
             if error is SummarizerError { throw error }
+            // Unwrapped, so runLlamaCpp can shorten the transcript and retry.
+            if case LlamaSession.LlamaError.promptTooLong = error { throw error }
             throw SummarizerError.generationFailed(error)
         }
     }
@@ -498,29 +652,25 @@ final class MeetingSummarizer {
 
     // MARK: - Transcript truncation
 
-    // Shrink very long transcripts to the maxTranscriptChars budget
-    // while keeping the most informative regions: the opening (attendees
-    // and agenda) and the closing (decisions and action items). The
-    // middle is replaced with an explicit elision marker so the model
-    // knows what was dropped.
-    private static func truncate(transcript: String) -> String {
-        if transcript.count <= maxTranscriptChars { return transcript }
-        let head = maxTranscriptChars * 6 / 10
-        let tail = maxTranscriptChars - head - 60  // leave room for the marker
+    // Keeps the most informative regions - the opening (attendees, agenda) and
+    // the closing (decisions, action items) - and replaces the middle with an
+    // explicit elision marker so the model knows what was dropped.
+    private static func truncate(transcript: String, maxChars: Int) -> String {
+        if transcript.count <= maxChars { return transcript }
+        let head = maxChars * 6 / 10
+        let tail = maxChars - head - 60  // leave room for the marker
         let start = transcript.prefix(head)
         let end = transcript.suffix(max(tail, 200))
         return "\(start)\n\n_…middle of transcript truncated for length…_\n\n\(end)"
     }
 
     // ------------------------------------------------------------------
-    // Gemma prompts (llama.cpp path), wrapped in Gemma 3's chat template.
-    // The Apple FM path uses guided generation - see appleInstructions
-    // and appleUserPrompt above.
+    // Gemma prompts (llama.cpp path), wrapped in Gemma 4's chat template.
+    // The Apple FM path uses guided generation instead - see above.
     // ------------------------------------------------------------------
 
-    // System prompt baked with anti-hallucination guardrails. Small
-    // models happily invent attendees and action items if you don't pin
-    // them to the source text.
+    // Anti-hallucination guardrails: small models happily invent attendees and
+    // action items unless pinned to the source text.
     private var systemPrompt: String {
         """
         You are a meeting minutes generator. Given a transcript with speaker
@@ -562,18 +712,17 @@ final class MeetingSummarizer {
         """
     }
 
-    // Gemma 3's chat template. Gemma doesn't have a separate `system`
-    // role - the system prompt rides inline at the top of the user turn.
-    // The BOS token is added automatically by llama_tokenize(add_bos:
-    // true), so we don't repeat it here. <end_of_turn> closes the user
-    // turn; the bare <start_of_turn>model trailer cues generation.
+    // Gemma 4's chat template. The BOS token is added by
+    // llama_tokenize(add_bos: true), so it isn't repeated here. <turn|>
+    // closes each turn; the bare <|turn>model trailer cues generation, and
+    // with no <|think|> in the system turn there's no reasoning block.
     private func chatPrompt(transcript: String) -> String {
         """
-        <start_of_turn>user
-        \(systemPrompt)
-
-        \(userPrompt(transcript: transcript))<end_of_turn>
-        <start_of_turn>model
+        <|turn>system
+        \(systemPrompt)<turn|>
+        <|turn>user
+        \(userPrompt(transcript: transcript))<turn|>
+        <|turn>model
 
         """
     }
@@ -591,8 +740,8 @@ final class MeetingSummarizer {
             """
     }
 
-    // Sidecar written when a recording is too short to summarize. An honest
-    // stub rather than a fabricated set of minutes - see `minWordsToSummarize`.
+    // An honest stub rather than a fabricated set of minutes - see
+    // `minWordsToSummarize`.
     private static func shortTranscriptDocument(transcriptURL: URL) -> String {
         """
         # Meeting Summary - \(formatTimestamp(Date()))
@@ -621,27 +770,33 @@ extension LlamaSession.LlamaError {
 
 #if canImport(FoundationModels)
 
-// Structured meeting minutes the Apple Foundation Model fills via guided
-// generation. The model emits an instance of this type directly through
-// constrained decoding - it never sees a Markdown template, so it cannot
-// echo placeholder text back as content. Empty arrays render as `_None._`
-// deterministically in `MeetingSummarizer.renderMarkdown`.
+// Structured meeting minutes the Apple Foundation Model fills via constrained
+// decoding. The model never sees a Markdown template, so it cannot echo
+// placeholder text back as content; empty arrays render as `_None._` in
+// `MeetingSummarizer.renderMarkdown`.
+//
+// Every list is capped. Under greedy decoding the model can get stuck
+// repeating one item ("Send a quick poll this week.") until the 4096-token
+// window overflows; the cap closes the list there instead, and `merged` drops
+// the repeats.
 @available(macOS 26.0, *)
 @Generable
 struct MeetingMinutes {
     @Guide(description: "A two or three sentence plain overview of what actually happened. Do not embellish.")
     let tldr: String
 
-    @Guide(description: "Decisions explicitly made during the meeting. Empty when the transcript records none.")
+    @Guide(
+        description: "Decisions explicitly made during the meeting. Empty when the transcript records none.",
+        .maximumCount(10))
     let keyDecisions: [String]
 
-    @Guide(description: "Action items someone explicitly committed to. Empty when there are none.")
+    @Guide(description: "Action items someone explicitly committed to. Empty when there are none.", .maximumCount(10))
     let actionItems: [MeetingActionItem]
 
-    @Guide(description: "Distinct topics actually discussed. Empty when none.")
+    @Guide(description: "Distinct topics actually discussed. Empty when none.", .maximumCount(10))
     let topicsDiscussed: [String]
 
-    @Guide(description: "Questions raised but left unresolved. Empty when none.")
+    @Guide(description: "Questions raised but left unresolved. Empty when none.", .maximumCount(10))
     let openQuestions: [String]
 }
 

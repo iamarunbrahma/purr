@@ -1,17 +1,27 @@
 import AppKit
 import Combine
+import IOKit
 
-// NSStatusItem-based menu bar surface. Icon reflects coordinator state so a
-// glance at the top-right of the screen tells you whether Purr is idle,
-// recording, or transcribing - even when the floating HUD is dismissed.
+// NSStatusItem-based menu bar surface. The icon reflects coordinator state so
+// Purr's status is readable even when the floating HUD is dismissed.
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private var stateCancellable: AnyCancellable?
+    // Shown when Secure Input has knocked out a shortcut - otherwise it
+    // silently does nothing. See menuNeedsUpdate(_:).
+    private let secureInputTitle = NSMenuItem()
+    private let secureInputDetail = NSMenuItem()
+    private let secureInputSeparator = NSMenuItem.separator()
+    private let blockedShortcuts: () -> [String]
+    // Shown while Microphone or Accessibility is off, which leaves dictation
+    // dead. Also re-checked in menuNeedsUpdate(_:).
+    private let permissionsItem = NSMenuItem()
+    private let permissionsSeparator = NSMenuItem.separator()
 
     private let onShowAbout: () -> Void
     private let onShowSettings: () -> Void
-    private let onShowOnboarding: () -> Void
+    private let onShowPermissions: () -> Void
     private let onQuit: () -> Void
 
     private lazy var iconIdle =
@@ -19,8 +29,7 @@ final class MenuBarController {
         ?? templateSymbol(named: "mic")
     private lazy var iconRecording = templateSymbol(named: "mic.fill")
     // Transcribing and meeting pair the speech glyph with a second symbol so a
-    // glance distinguishes them from plain dictation: mic + waveform while a
-    // transcript is being produced, mic + record-dot while a meeting records.
+    // glance distinguishes them from plain dictation.
     private lazy var iconTranscribing = templateComposite(["mic", "waveform"])
     private lazy var iconMeeting = templateComposite(["mic.fill", "record.circle.fill"])
     private lazy var iconError = templateSymbol(named: "exclamationmark.triangle")
@@ -29,20 +38,21 @@ final class MenuBarController {
         coordinator: AppCoordinator,
         onShowAbout: @escaping () -> Void,
         onShowSettings: @escaping () -> Void,
-        onShowOnboarding: @escaping () -> Void,
+        onShowPermissions: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.onShowAbout = onShowAbout
         self.onShowSettings = onShowSettings
-        self.onShowOnboarding = onShowOnboarding
+        self.onShowPermissions = onShowPermissions
         self.onQuit = onQuit
+        self.blockedShortcuts = { [weak coordinator] in coordinator?.shortcutsBlockedBySecureInput ?? [] }
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+        statusItem.autosaveName = "com.arunbrahma.purr.statusItem"
 
         configureButton()
         rebuildMenu()
 
-        // The coordinator folds dictation, voice-edit, and meeting activity
-        // into one signal; we just map it to a glyph.
         stateCancellable = coordinator.$menuBarStatus.sink { [weak self] status in
             self?.applyStatus(status)
         }
@@ -56,16 +66,32 @@ final class MenuBarController {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
+
+        secureInputTitle.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+        for item in [secureInputTitle, secureInputDetail, secureInputSeparator] {
+            item.isEnabled = false
+            item.isHidden = true
+            menu.addItem(item)
+        }
+
+        permissionsItem.title = "Permissions Needed…"
+        permissionsItem.action = #selector(triggerPermissions)
+        permissionsItem.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)
+        for item in [permissionsItem, permissionsSeparator] {
+            item.isHidden = Permissions.allGranted()
+            menu.addItem(item)
+        }
 
         menu.addItem(menuItem(title: "About Purr", selector: #selector(triggerAbout)))
         menu.addItem(.separator())
         menu.addItem(menuItem(title: "Settings", selector: #selector(triggerSettings)))
-        menu.addItem(menuItem(title: "Onboarding Setup", selector: #selector(triggerOnboarding)))
         menu.addItem(.separator())
-        // The Quit key equivalent is cosmetic - it makes ⌃⌥Q visible next to
-        // the item. The actual global hotkey is dispatched by HotkeyManager via
-        // CGEventTap, and both paths converge on the same closure. Settings and
-        // Onboarding Setup have no global hotkey, so they show no shortcut.
+        // The Quit key equivalent is cosmetic - it only makes ⌃⌥Q visible. The
+        // actual global hotkey is dispatched by HotkeyManager via CGEventTap,
+        // and both paths converge on the same closure.
         menu.addItem(
             menuItem(
                 title: "Quit Purr",
@@ -92,9 +118,44 @@ final class MenuBarController {
         return item
     }
 
+    // Re-checked on every open. Under Secure Input HotkeyManager moves key
+    // combinations to Carbon hotkeys, so this lists only the ones Carbon
+    // refused because another app already owns them.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let granted = Permissions.allGranted()
+        permissionsItem.isHidden = granted
+        permissionsSeparator.isHidden = granted
+
+        let blocked = blockedShortcuts()
+        for item in [secureInputTitle, secureInputDetail, secureInputSeparator] {
+            item.isHidden = blocked.isEmpty
+        }
+        guard !blocked.isEmpty else { return }
+        secureInputTitle.title = "\(blocked.joined(separator: ", ")) blocked by Secure Input"
+        let holder = Self.secureInputHolder() ?? "another app"
+        secureInputDetail.title =
+            holder == "loginwindow"
+            ? "Held by loginwindow - log out or restart to clear it."
+            : "Held by \(holder)."
+    }
+
+    // Name of the process holding Secure Input, from the console session's
+    // IORegistry entry (where `ioreg -l | grep SecureInput` finds it).
+    private static func secureInputHolder() -> String? {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        defer { IOObjectRelease(root) }
+        guard
+            let users = IORegistryEntryCreateCFProperty(
+                root, "IOConsoleUsers" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? [[String: Any]],
+            let pid = users.lazy.compactMap({ $0["kCGSSessionSecureInputPID"] as? Int }).first
+        else { return nil }
+        return NSRunningApplication(processIdentifier: pid_t(pid))?.localizedName
+    }
+
     @objc private func triggerAbout() { onShowAbout() }
     @objc private func triggerSettings() { onShowSettings() }
-    @objc private func triggerOnboarding() { onShowOnboarding() }
+    @objc private func triggerPermissions() { onShowPermissions() }
     @objc private func triggerQuit() { onQuit() }
 
     // ------------------------------------------------------------------
@@ -130,10 +191,9 @@ final class MenuBarController {
 
     // Loads a bundled vector glyph as a menu-bar template image, scaled to
     // `height` points (width follows the asset's aspect ratio). Prefers the PDF
-    // (resolution-independent, stays crisp at any menu-bar scale) and falls back
-    // to a PNG if present. isTemplate lets macOS tint it for light/dark bars and
-    // the recording-state highlight exactly like the SF Symbol states. Returns
-    // nil if no asset is found so the caller can fall back to a system symbol.
+    // so it stays crisp at any menu-bar scale. isTemplate lets macOS tint it
+    // like the SF Symbol states. Returns nil when no asset is found, so the
+    // caller can fall back to a system symbol.
     private func templateImage(named name: String, height: CGFloat) -> NSImage? {
         let url = ["pdf", "png"].lazy
             .compactMap { Bundle.main.url(forResource: name, withExtension: $0) }
@@ -145,12 +205,10 @@ final class MenuBarController {
         return image
     }
 
-    // Draws several SF Symbols left-to-right into one image. Marking the result
-    // isTemplate lets the menu bar tint it exactly like a single template
-    // symbol, so the composite adapts to light/dark menu bars. The
-    // drawingHandler re-renders at the display's scale (crisp on Retina); each
-    // source symbol draws at its natural size so it matches the single-symbol
-    // states, vertically centred against the tallest glyph.
+    // Draws several SF Symbols left-to-right into one image. isTemplate lets the
+    // menu bar tint the composite like a single symbol; the drawingHandler
+    // re-renders at the display's scale (crisp on Retina). Each source symbol
+    // draws at its natural size so it matches the single-symbol states.
     private func templateComposite(_ names: [String]) -> NSImage? {
         let symbols = names.compactMap {
             NSImage(systemSymbolName: $0, accessibilityDescription: "Purr status")

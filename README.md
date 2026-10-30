@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-orange)](#)
-[![Swift 5.9+](https://img.shields.io/badge/Swift-5.9%2B-orange?logo=swift)](#)
+[![Swift 6.2+](https://img.shields.io/badge/Swift-6.2%2B-orange?logo=swift)](#)
 [![Engine: Parakeet TDT v2](https://img.shields.io/badge/Engine-Parakeet%20TDT%20v2-purple)](#)
 
 ### Hold a key. Speak. Your words type into any text field - 100% local, on-device.
@@ -53,9 +53,8 @@ open /Applications/Purr.app
 
 First launch:
 
-1. Walks you through Microphone, Accessibility, and Input Monitoring permissions.
+1. A short setup picks the speech engine, downloads its model (~450 MB for Parakeet), and asks for Microphone and Accessibility.
 2. Click into any text field, hold **Right Option**, speak, release.
-3. First launch downloads the ~450 MB Parakeet model in the background; once it finishes, dictation is near-instant.
 
 ## Hot Keys
 
@@ -76,7 +75,7 @@ While a meeting is recording, the dictation hotkey is suspended so a reflexive p
 - **Two transcription engines**: Parakeet TDT v2 (default) is English-only, on-device, and the fastest option on Apple Silicon. Switch to WhisperKit (Whisper Tiny EN through Large V3 Turbo) when you need another language.
 - **Smart Typing**: With Parakeet, words appear live in the focused app as you speak instead of only landing on key release. Each phrase stays separately undoable and coexists cleanly with autocorrect and IMEs.
 - **Meeting mode**: Captures your mic and your Mac's system audio together, so everyone on a call is transcribed. Echo cancellation and offline speaker diarization (FluidAudio) label each voice, and transcripts save as Markdown to a folder you choose.
-- **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 3 4B locally on older systems.
+- **Meeting summaries**: Each meeting can save a sidecar `.summary.md` with a TL;DR, decisions, action items, and notes. Uses Apple's on-device model on macOS 26+, or Gemma 4 E2B locally on older systems.
 - **Voice editing**: Select text, hold the voice-edit hotkey, and speak the change. A parser handles "change X to Y", "delete X", "capitalize", and more; anything else replaces the selection wholesale.
 - **In-speech voice commands**: Punctuate, break paragraphs, and undo hands-free by saying "comma", "period", "new paragraph", or "scratch that" as you dictate. Add your own in Settings.
 - **Custom dictionary**: Teach Purr the proper nouns and acronyms it keeps mishearing - map "fluid audio" to "FluidAudio" or "ts" to "TypeScript".
@@ -163,30 +162,33 @@ Any standard text field. Voice editing works in Accessibility-supported fields (
 <details>
 <summary><strong>How do I update Purr?</strong></summary>
 
-Open the menu bar > About Purr and it checks GitHub Releases automatically (or click "Check for Updates"). A new version downloads, verifies its checksum, and relaunches in place.
+Open the menu bar > About Purr and it checks GitHub Releases each time it opens. A new version downloads, verifies its checksum, and relaunches in place.
 
 </details>
 
 <details>
 <summary><strong>Why was I asked to grant permissions again after an update?</strong></summary>
 
-Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Onboarding Setup.
+Either the bundle ID changed (e.g. you swapped in a different fork) or you revoked a permission in System Settings. Re-grant from the menu bar > Permissions Needed…
 
 </details>
 
 <details>
 <summary><strong>How do I delete the models or fully uninstall Purr?</strong></summary>
 
-To reclaim disk space without uninstalling, open **Settings > Customization > Models** and click **Delete Models**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
+To reclaim disk space without uninstalling, open **Settings > Models** and click **Delete All…**. It removes every downloaded model (Parakeet, Whisper, the diarizer, and Gemma) while keeping your meeting transcripts and preferences; the models re-download automatically the next time a feature needs them.
 
-To uninstall completely, quit Purr, drag `Purr.app` to the Trash, then remove its data. Everything Purr writes - all model weights and your meeting transcripts - lives under one folder:
+To uninstall completely, open **Settings > General** and click **Uninstall…**. Purr moves itself, its models and your meetings to the Trash, deletes its preferences and caches, resets its permissions, and quits.
+
+Already dragged Purr to the Trash? Put it back, open it and click **Uninstall…**, or remove what it left yourself:
 
 ```bash
-rm -rf ~/Library/Application\ Support/Purr   # models + meeting transcripts
-defaults delete com.arunbrahma.purr          # preferences
+rm -rf ~/Library/Application\ Support/Purr     # models + meetings
+rm -rf ~/Library/Caches/com.arunbrahma.purr   # caches
+defaults delete com.arunbrahma.purr           # preferences
 ```
 
-macOS can't run cleanup code when an app is dragged to the Trash, so those are the only leftovers. Because every model now lives under that single folder, app-cleaner utilities that search for "Purr" find all of it too.
+Older versions also kept Whisper files in `~/Documents/huggingface`. Delete that folder too if no other app uses it.
 
 </details>
 
@@ -202,7 +204,7 @@ Purr builds on open-source work in two categories, handled differently.
 
 - **Parakeet TDT v2** (NVIDIA, run via FluidAudio) - CC-BY-4.0. Powers the default English dictation, voice editing, and meeting transcription.
 - **Whisper** (OpenAI, via WhisperKit) - MIT. Optional engine for other languages.
-- **Gemma 3 4B Instruct** (Google) - [Gemma Terms of Use](https://ai.google.dev/gemma/terms). Used for meeting summaries. Settings surfaces this notice before the download begins; by downloading the model you accept those terms, including the [Gemma Prohibited Use Policy](https://ai.google.dev/gemma/prohibited_use_policy).
+- **Gemma 4 E2B Instruct** (Google) - [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0). Used for meeting summaries and Voice Edit.
 
 **Bundled code** is compiled or linked into the app:
 

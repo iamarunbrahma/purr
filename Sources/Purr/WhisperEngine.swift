@@ -5,9 +5,9 @@ import os.log
 // Wraps WhisperKit. Multilingual fallback for the long tail of languages
 // (Asian, Arabic, etc.) that the English-only Parakeet v2 doesn't cover.
 //
-// Streaming is intentionally not implemented: WhisperKit's chunked
-// streaming runs on whole-30s windows and produces awkward partial
-// revisions. makeStreamingSession() throws so callers fall back to batch.
+// Streaming is intentionally not implemented: WhisperKit's chunked streaming
+// runs on whole-30s windows and produces awkward partial revisions, so
+// makeStreamingSession() throws and callers fall back to batch.
 @MainActor
 final class WhisperEngine: TranscriptionEngine {
     nonisolated let supportsStreaming: Bool = false
@@ -21,18 +21,20 @@ final class WhisperEngine: TranscriptionEngine {
         self.modelIdentifier = modelName
     }
 
-    // Pre-load the model so the first dictation doesn't pay the disk-load
-    // cost. Safe to call multiple times - same-model warmups are no-ops.
-    // If the weights aren't on disk, this fails-soft (logs and returns)
-    // rather than triggering a background download - the Settings UI is
-    // the only path that pulls models, so it can show progress and surface
-    // failures inline.
+    // Pre-loads the model so the first dictation doesn't pay the disk-load cost.
+    // Same-model warmups are no-ops. Missing weights fail soft rather than
+    // downloading: Settings is the only path that pulls models, so it can show
+    // progress and surface failures inline.
     func warmup() async {
         if loadedModel == modelIdentifier, pipe != nil { return }
         do {
             let folder = try await ModelManager.localFolder(for: modelIdentifier)
             let cfg = WhisperKitConfig(
                 modelFolder: folder.path,
+                // WhisperKit fetches the tokenizer on first load, by default into
+                // ~/Documents/huggingface. In the model's own folder it goes with
+                // the model when that's deleted or Purr is uninstalled.
+                tokenizerFolder: folder,
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,
@@ -54,16 +56,15 @@ final class WhisperEngine: TranscriptionEngine {
         if loadedModel != modelIdentifier { await warmup() }
         guard let pipe = pipe else { throw EngineError.notLoaded }
 
-        // Translate (X→English) only when the user opted in AND the loaded
-        // model can actually do it. Turbo and English-only builds silently
-        // ignore the translate task and return the source language, so we
-        // never request it from them.
+        // Turbo and English-only builds silently ignore the translate task and
+        // return the source language, so never request it from them.
         let translate =
             SettingsStore.shared.translateToEnglish
             && ModelManager.supportsTranslation(modelIdentifier)
-        // When translating, a pinned source language skips Whisper's
-        // audio-based detection, which is unreliable on short clips. Empty
-        // string means auto-detect; plain transcription always auto-detects.
+        // A pinned source language skips Whisper's audio-based detection, which
+        // is unreliable on short clips. Empty string means auto-detect, which
+        // has to be asked for: with the prefill prompt on and no language,
+        // WhisperKit forces <|en|> and turns other languages into English (#7).
         let sourceLanguage = SettingsStore.shared.translationSourceLanguage
         let language: String? = (translate && !sourceLanguage.isEmpty) ? sourceLanguage : nil
         let options = DecodingOptions(
@@ -73,21 +74,31 @@ final class WhisperEngine: TranscriptionEngine {
             temperature: 0.0,
             sampleLength: 224,
             usePrefillPrompt: true,
+            detectLanguage: language == nil,
             withoutTimestamps: true,
             wordTimestamps: false
         )
         let started = Date()
-        let results: [TranscriptionResult] = try await pipe.transcribe(
-            audioArray: samples,
-            decodeOptions: options
-        )
-        let elapsed = Date().timeIntervalSince(started)
-        let raw = results.map(\.text).joined(separator: " ")
-        let cleaned = TranscriptCleaner.clean(raw)
-        log.info(
-            "Transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s (task=\(translate ? "translate" : "transcribe", privacy: .public), lang=\(language ?? "auto", privacy: .public))"
-        )
-        return cleaned
+        let audioSeconds = Double(samples.count) / 16_000
+        let budget: Duration = .seconds(45) + .seconds(audioSeconds * 5)
+        do {
+            let results: [TranscriptionResult] = try await withTimeout(budget) {
+                try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+            }
+            let elapsed = Date().timeIntervalSince(started)
+            let raw = results.map(\.text).joined(separator: " ")
+            let cleaned = TranscriptCleaner.clean(raw)
+            log.info(
+                "Transcribed \(samples.count, privacy: .public) samples in \(String(format: "%.2f", elapsed), privacy: .public)s (task=\(translate ? "translate" : "transcribe", privacy: .public), lang=\(language ?? "auto", privacy: .public))"
+            )
+            return cleaned
+        } catch is TimedOutError {
+            let waited = Date().timeIntervalSince(started)
+            log.error(
+                "Whisper transcription timed out after \(String(format: "%.1f", waited), privacy: .public)s for \(samples.count, privacy: .public) samples (\(String(format: "%.1f", audioSeconds), privacy: .public)s audio) - inference did not return. Aborting so the HUD can recover."
+            )
+            throw EngineError.transcriptionTimedOut
+        }
     }
 
     func makeStreamingSession() async throws -> any StreamingSession {
@@ -99,6 +110,7 @@ enum EngineError: LocalizedError {
     case notLoaded
     case streamingNotSupported(engineName: String)
     case modelDirectoryMissing
+    case transcriptionTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -109,13 +121,15 @@ enum EngineError: LocalizedError {
                 "\(name) does not support real-time streaming. Switch the engine, or turn off Smart typing."
         case .modelDirectoryMissing:
             return "Model files are missing on disk. Open Settings → Engine to download."
+        case .transcriptionTimedOut:
+            return
+                "Transcription took too long and was stopped. If this keeps happening, switch to a Whisper model in Settings → Engine, or try a shorter recording."
         }
     }
 }
 
-// Both engines emit the same junk that Whisper learned from YouTube
-// captioning: "[Music]", "(silence)", "<|endoftext|>", and so on. Cleaning
-// them is identical work - share the implementation so post-process
+// Both engines emit the same junk Whisper learned from YouTube captioning:
+// "[Music]", "(silence)", "<|endoftext|>", and so on. Shared so post-process
 // results match exactly across engines.
 enum TranscriptCleaner {
     static func clean(_ text: String) -> String {

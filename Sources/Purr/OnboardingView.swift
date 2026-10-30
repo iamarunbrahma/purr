@@ -1,179 +1,396 @@
 import AppKit
 import SwiftUI
 
-// First-run setup: a three-step permissions walkthrough plus a picker for
-// where meetings are saved. macOS doesn't let us mass-prompt or auto-grant
-// permissions; the best we can do is explain what each toggle is for and
-// deeplink to the right pane in System Settings. The view polls every
-// second for the live state of each permission.
-//
-// Microphone updates live - its green check appears as soon as it's
-// granted. Accessibility and Input Monitoring do NOT: macOS only exposes
-// those grants to a freshly launched process (AXIsProcessTrusted and
-// IOHIDCheckAccess keep returning the stale pre-grant value for the life
-// of the process - a known, unfixed macOS behaviour). So once the user has
-// been sent to System Settings for those two, the row swaps its "Grant"
-// button for "Restart": relaunching is the only way to pick the grant up.
+// First-launch setup. It runs in the Settings window until it's finished, then
+// that window turns into Settings and setup never shows again. Each step has a
+// short explainer beside it, and the current step is saved, so a relaunch
+// mid-setup reopens on it.
 struct OnboardingView: View {
-    // Dismisses the onboarding window; the app keeps running in the menu bar
-    // afterward (it's an .accessory/LSUIElement app). Wired by AppDelegate to
-    // close the hosting window.
-    let onFinish: () -> Void
-
-    @State private var status: [Permissions.Kind: Bool] = [:]
-    @State private var pollTimer: Timer?
-    @State private var observers: [NSObjectProtocol] = []
-    // Permissions the user has been sent to System Settings to grant, whose
-    // result this process can't observe until it relaunches.
-    @State private var awaitingRestart: Set<Permissions.Kind> = []
+    let coordinator: AppCoordinator
+    @ObservedObject var models: ModelStore
     @ObservedObject private var settings = SettingsStore.shared
+    @StateObject private var permissions = PermissionsModel()
+    @State private var step = Step(rawValue: SettingsStore.shared.onboardingStep) ?? .welcome
+    // The engine card picked, applied on Continue.
+    @State private var engine = SettingsStore.shared.engine
+    @State private var sample = ""
+    @FocusState private var sampleFocused: Bool
+    // The primary button sits in the same spot on every step, so a double
+    // click would skip the next one - and the engine step starts a download.
+    @State private var advancedAt = Date.distantPast
 
-    init(onFinish: @escaping () -> Void) {
-        self.onFinish = onFinish
+    private enum Step: Int {
+        case welcome, engine, download, permissions, tryIt
     }
 
     var body: some View {
-        VStack(spacing: 18) {
-            VStack(spacing: 6) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 72, height: 72)
-                Text("Welcome to Purr")
-                    .font(.title2.weight(.semibold))
-            }
-
-            VStack(spacing: 10) {
-                ForEach(Permissions.Kind.allCases) { kind in
-                    permissionRow(kind: kind)
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                Button {
+                    step = Step(rawValue: step.rawValue - 1) ?? .welcome
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
                 }
-            }
+                .buttonStyle(.link)
+                .opacity(step == .welcome ? 0 : 1)
+                .disabled(step == .welcome)
 
-            meetingsFolderRow
+                content
 
-            systemAudioNote
-
-            HStack {
-                // The default (accented, right-hand) button is whichever step
-                // actually moves the user forward. When a permission was just
-                // toggled in System Settings, this process can't see the grant
-                // until it relaunches - so Restart is the real "finish setup"
-                // action and leads. Otherwise nothing is left but to start
-                // using the app, so that leads and Restart drops back to a
-                // quiet fixer for a grant that stubbornly reads grey.
-                if restartPending {
-                    Button("Start Using Purr") { finish() }
+                Spacer(minLength: 0)
+                HStack {
                     Spacer()
-                    Button("Restart Purr") { quitAndRelaunch() }
-                        .keyboardShortcut(.defaultAction)
-                        .help(restartHelp)
-                } else {
-                    Button("Restart Purr") { quitAndRelaunch() }
-                        .help(restartHelp)
-                    Spacer()
-                    Button("Start Using Purr") { finish() }
+                    Button(primaryTitle, action: next)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                         .keyboardShortcut(.defaultAction)
                 }
             }
+            .padding(.horizontal, 36)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            let info = explainer
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: info.symbol)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 2)
+                Text(info.title).font(.headline)
+                Text(info.text)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+            .frame(width: 250, alignment: .leading)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .card()
+            .padding(16)
         }
-        .padding(24)
-        // Pin the width so the view has one definite ideal size. Without
-        // this, NSHostingController can't derive a stable window size from
-        // the content (text views have no intrinsic width) and the window
-        // opens oversized and empty. Height stays content-driven.
-        .frame(width: 520)
         .onAppear {
-            // Re-register the current binary's cdhash with TCC. After every
-            // ad-hoc rebuild the cdhash changes; without this call the new
-            // binary either isn't listed in System Settings at all, or the
-            // existing "Purr" row points at a stale signature and the
-            // app appears denied even when the toggle is on. These calls
-            // prompt only the first time TCC sees a given (bundleID, cdhash)
-            // pair, so re-running onboarding later is silent.
-            _ = Permissions.requestAccessibility()
-            _ = Permissions.requestInputMonitoring()
-
-            refresh()
-
-            // Polling is the safety net for "user toggled the switch in
-            // System Settings while onboarding was open." 1s is plenty.
-            // .common runloop mode keeps it alive during window dragging
-            // and modal sheets.
-            let timer = Timer(timeInterval: 1.0, repeats: true) { _ in
-                Task { @MainActor in self.refresh() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            pollTimer = timer
-
-            // Eager refresh when the user comes back from System Settings.
-            // The onboarding window regains key status (or the app regains
-            // active status) the moment they switch back. These notifications
-            // let us update green checks instantly instead of waiting up to
-            // a full polling cycle.
-            let center = NotificationCenter.default
-            let onKey = center.addObserver(
-                forName: NSWindow.didBecomeKeyNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in self.refresh() }
-            }
-            let onActive = center.addObserver(
-                forName: NSApplication.didBecomeActiveNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in self.refresh() }
-            }
-            observers = [onKey, onActive]
+            // Launch skips warmup until setup is done. A relaunch past the
+            // engine step still wants that model loaded for Try It.
+            if step.rawValue > Step.engine.rawValue { useChosenEngine() }
         }
-        .onDisappear {
-            pollTimer?.invalidate()
-            pollTimer = nil
-            for token in observers {
-                NotificationCenter.default.removeObserver(token)
-            }
-            observers.removeAll()
+        .onChange(of: step) { _, step in settings.onboardingStep = step.rawValue }
+        .onChange(of: permissions[.accessibility]) { _, status in
+            if status == .granted { coordinator.installHotkeysIfNeeded() }
         }
     }
 
-    private func refresh() {
-        for kind in Permissions.Kind.allCases {
-            status[kind] = Permissions.isGranted(kind)
+    @ViewBuilder
+    private var content: some View {
+        switch step {
+        case .welcome:
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 64, height: 64)
+            heading(
+                "Welcome to Purr",
+                "Hold a key, talk, and Purr types what you said into whatever app you're in."
+            )
+            Text("Setup downloads a speech model (\(size(of: .parakeet))) from Hugging Face.")
+                .foregroundStyle(.secondary)
+
+        case .engine:
+            heading("Choose a speech engine", "It turns your voice into text. You can switch later in Settings.")
+            VStack(spacing: 10) {
+                engineCard(
+                    .parakeet, title: "Parakeet", detail: "English. The fastest, and it can type while you talk.")
+                engineCard(.whisper, title: "Whisper", detail: "100+ languages. A little slower.")
+            }
+
+        case .download:
+            let status = models[chosenModel]
+            if status.isOnDisk, status.download == nil {
+                heading("The speech model is ready", "It's on this Mac now, so Purr works offline.")
+            } else if status.download == nil, status.failure != nil {
+                heading("The download stopped", "Check your internet connection, then retry.")
+            } else {
+                heading(
+                    "Downloading the speech model",
+                    "It takes a minute or two. You can keep going while it downloads."
+                )
+            }
+            ModelRow(kind: chosenModel, models: models, canDelete: false)
+                .padding(12)
+                .card()
+
+        case .permissions:
+            heading(
+                "Allow access",
+                "Purr asks for each one here. Accessibility takes one switch in System Settings, and Purr comes back by itself once it's on."
+            )
+            let kinds = Permissions.Kind.allCases.filter { permissions[$0] != nil }
+            VStack(spacing: 0) {
+                ForEach(kinds) { kind in
+                    if kind != kinds.first { Divider().padding(.horizontal, 12) }
+                    PermissionRow(kind: kind, model: permissions).padding(12)
+                }
+            }
+            .card()
+            .onAppear { permissions.start() }
+            .onDisappear { permissions.stop() }
+
+        case .tryIt:
+            heading("Try it", tryInstruction)
+            TextField("Your words show up here", text: $sample, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(4, reservesSpace: true)
+                .focused($sampleFocused)
+                .padding(10)
+                .card()
+                .onAppear { sampleFocused = true }
+            if let note = tryNote {
+                Text(note)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
-    // True when the user was sent to System Settings to grant Accessibility or
-    // Input Monitoring but this process still can't see the grant. macOS only
-    // exposes those to a freshly launched process, so a relaunch is the only
-    // thing that finishes setup - the bottom bar leads with Restart while true.
-    private var restartPending: Bool {
-        awaitingRestart.contains { !(status[$0] ?? false) }
+    private func heading(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.largeTitle.weight(.semibold))
+            Text(detail)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
-    private var restartHelp: String {
-        "If a permission stays grey after you toggled it on in System Settings, restart Purr so macOS re-reads the trust state for this process."
+    private func engineCard(_ choice: SettingsStore.Engine, title: String, detail: String) -> some View {
+        let selected = engine == choice
+        return Button {
+            engine = choice
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(detail).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Text(size(of: model(for: choice)))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .card(highlighted: selected)
     }
 
-    // Marks onboarding complete and closes the window. The app keeps running in
-    // the menu bar - the friendly counterpart to the old "Quit Purr" ending.
-    private func finish() {
-        SettingsStore.shared.onboardingDone = true
-        onFinish()
+    private var explainer: (symbol: String, title: String, text: String) {
+        switch step {
+        case .welcome:
+            return (
+                "lock", "Stays on your Mac",
+                "Purr turns your voice into text on this Mac. Nothing you say goes to a server, and it works offline once setup is done."
+            )
+        case .engine:
+            return (
+                "waveform", "Which one?",
+                "Dictating in English? Parakeet is the quickest. Speaking other languages? Pick Whisper."
+            )
+        case .download:
+            return (
+                "arrow.down.circle", "Why a download?",
+                "The speech model runs on your Mac, so it has to live on your Mac. Purr fetches it once, from Hugging Face. Models for other features download only if you turn those on."
+            )
+        case .permissions:
+            return (
+                "hand.raised", "What they're for",
+                "Microphone lets Purr hear you. Accessibility lets it notice the shortcut in any app and type the text at your cursor. System audio is only for meetings, so notes include everyone on the call."
+            )
+        case .tryIt:
+            return (
+                "keyboard", "Works anywhere",
+                "Purr types into any app with a text field. Change the shortcut, or switch to tapping it to start and stop, in Settings › General."
+            )
+        }
     }
 
-    // Detached shell helper waits for the current PID to exit, then
-    // re-opens the bundle. Surviving NSApp.terminate requires the
-    // helper to be reparented away from us, which `Process` + a /tmp
-    // script achieves.
-    private func quitAndRelaunch() {
+    private var tryInstruction: String {
+        let key = settings.hotkey.displayName
+        switch settings.hotkeyMode {
+        case .holdToTalk: return "Hold \(key) and say something, then let go. Your words show up below."
+        case .toggle: return "Press \(key), say something, then press it again. Your words show up below."
+        }
+    }
+
+    private var tryNote: String? {
+        if !Permissions.allGranted() {
+            return "The shortcut works once Microphone and Accessibility are allowed, on the step before."
+        }
+        let status = models[chosenModel]
+        if let progress = status.download {
+            return "The speech model is still downloading (\(progress.label)). Try it when that's done."
+        }
+        if !status.isOnDisk { return "The speech model isn't downloaded yet. Go back two steps to retry." }
+        return nil
+    }
+
+    private var primaryTitle: String {
+        switch step {
+        case .welcome: return "Get Started"
+        case .tryIt: return "Finish"
+        default: return "Continue"
+        }
+    }
+
+    private func next() {
+        guard Date().timeIntervalSince(advancedAt) > 0.5 else { return }
+        advancedAt = Date()
+        switch step {
+        case .welcome: step = .engine
+        case .engine:
+            useChosenEngine()
+            step = .download
+        case .download: step = .permissions
+        case .permissions: step = .tryIt
+        case .tryIt:
+            settings.onboardingStep = Step.welcome.rawValue
+            settings.onboardingDone = true
+        }
+    }
+
+    // Loads the chosen engine and starts its model's download, which on a
+    // first launch waits for this step so the user picks what's fetched.
+    private func useChosenEngine() {
+        if settings.engine != engine { settings.switchEngine(to: engine) }
+        coordinator.reloadEngine()
+        if !models[chosenModel].isOnDisk { models.download(chosenModel) }
+    }
+
+    private var chosenModel: ModelKind { model(for: settings.engine) }
+
+    private func model(for engine: SettingsStore.Engine) -> ModelKind {
+        engine == .parakeet ? .parakeet : .whisper(settings.modelName)
+    }
+
+    private func size(of kind: ModelKind) -> String {
+        ByteCountFormatter.string(fromByteCount: models[kind].bytesOnDisk ?? kind.downloadBytes, countStyle: .file)
+    }
+}
+
+extension View {
+    // The grouped-box look of Settings' rows, for setup's cards.
+    fileprivate func card(highlighted: Bool = false) -> some View {
+        background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        highlighted ? Color.accentColor : Color(nsColor: .separatorColor),
+                        lineWidth: highlighted ? 2 : 1)
+            )
+    }
+}
+
+// Live permission state for setup and Settings › General. Polls while shown,
+// since macOS posts nothing when Microphone or system audio change, and brings
+// Purr back to the front once Accessibility comes on in System Settings, so the
+// user never has to find their way back.
+@MainActor
+final class PermissionsModel: ObservableObject {
+    @Published private(set) var statuses: [Permissions.Kind: Permissions.Status] = [:]
+    // Purr sent the user to System Settings for Accessibility...
+    @Published private(set) var awaitingAccessibility = false
+    // ...and they came back while it still reads off: either it isn't on yet,
+    // or it is and this process can't see it, so the row offers both fixes.
+    @Published private(set) var accessibilityStillOff = false
+    private var timer: Timer?
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    init() { refresh() }
+
+    subscript(kind: Permissions.Kind) -> Permissions.Status? { statuses[kind] }
+
+    func start() {
+        refresh()
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        // .common keeps it firing while the window is dragged.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+
+        let app = NotificationCenter.default
+        let active = app.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.cameBack() }
+        }
+        let system = DistributedNotificationCenter.default()
+        let changed = system.addObserver(forName: Permissions.accessibilityChanged, object: nil, queue: .main) {
+            [weak self] _ in
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                self?.refresh()
+            }
+        }
+        observers = [(app, active), (system, changed)]
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        for (center, token) in observers { center.removeObserver(token) }
+        observers.removeAll()
+    }
+
+    func refresh() {
+        var next: [Permissions.Kind: Permissions.Status] = [:]
+        for kind in Permissions.Kind.allCases { next[kind] = Permissions.status(kind) }
+        if statuses != next { statuses = next }
+        if awaitingAccessibility, next[.accessibility] == .granted {
+            awaitingAccessibility = false
+            accessibilityStillOff = false
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func request(_ kind: Permissions.Kind) {
+        switch kind {
+        case .microphone:
+            Permissions.requestMicrophone { [weak self] granted in
+                // Launch skips Core Audio's setup until mic access is granted.
+                if granted {
+                    Task.detached(priority: .userInitiated) { AudioRecorder.prepareForFirstStart() }
+                }
+                self?.refresh()
+            }
+        case .accessibility:
+            awaitingAccessibility = true
+            accessibilityStillOff = false
+            Permissions.openSettings(for: kind)
+        case .systemAudio:
+            Permissions.requestSystemAudio { [weak self] in self?.refresh() }
+        }
+    }
+
+    private func cameBack() {
+        refresh()
+        if awaitingAccessibility { accessibilityStillOff = true }
+    }
+
+    // For a grant this process can't see. A detached shell helper waits for
+    // the current PID to exit, then re-opens the bundle, and setup reopens on
+    // the same step. Surviving NSApp.terminate requires the helper to be
+    // reparented away from us, which `Process` + a /tmp script achieves.
+    func relaunch() {
         let appPath = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("purr-relaunch-\(UUID().uuidString).sh")
-        // `open -n` forces a new instance. Without it LaunchServices
-        // can briefly route back to the just-quit process's cached
-        // state, defeating the relaunch.
+        // `open -n` forces a new instance. Without it LaunchServices can
+        // briefly route back to the just-quit process's cached state,
+        // defeating the relaunch.
         let script = """
             #!/bin/sh
             set -u
@@ -194,88 +411,70 @@ struct OnboardingView: View {
             task.arguments = [scriptURL.path]
             try task.run()
         } catch {
-            // Helper spawn failed; we still quit and let the user re-open
-            // manually rather than appearing stuck.
+            // Helper spawn failed; still quit and let the user re-open manually
+            // rather than appearing stuck.
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             NSApp.terminate(nil)
         }
     }
+}
 
-    // System Audio Recording is not a fourth row: it's only used by meeting
-    // recording, and macOS exposes no API to request or track it ahead of
-    // time. So onboarding explains it and offers a deep-link to the pane; the
-    // actual prompt fires in context the first time the user records a meeting.
-    private var systemAudioNote: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .padding(.top, 1)
-            Text("Provide system audio recording access for Meeting Mode")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button("Open Settings") {
-                Permissions.openSystemAudioSettings()
-            }
-            .buttonStyle(.link)
-            .font(.caption)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.05))
-        )
-    }
+// One permission: what it's for, then Allow, or Allowed once macOS says so.
+struct PermissionRow: View {
+    let kind: Permissions.Kind
+    @ObservedObject var model: PermissionsModel
 
-    // Lets the user pick where meeting transcripts are saved. Optional: when
-    // left unset, meetings save to the default Application Support folder,
-    // which needs no file-access consent. A custom folder is stored as a plain
-    // path - the app isn't sandboxed, so no security-scoped bookmark is needed.
-    private var meetingsFolderRow: some View {
-        let isDefault = settings.meetingsFolderPath.isEmpty
-        // Show the full location for both states (default and chosen), e.g.
-        // ~/Library/Application Support/Purr/Purr Meetings, rather than a generic
-        // "Default" label.
-        let folderPath =
-            isDefault
-            ? SettingsStore.defaultMeetingsDirectory.path
-            : settings.meetingsFolderPath
-        let displayPath = (folderPath as NSString).abbreviatingWithTildeInPath
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "folder")
-                .foregroundStyle(.secondary)
-                .font(.title3)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Meetings folder").font(.body.weight(.medium))
-                Text(displayPath)
+    var body: some View {
+        let status = model[kind]
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(kind.title)
+                Text(caption(status))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Button("Choose…") { chooseMeetingsFolder() }
-                    .controlSize(.small)
-                if !isDefault {
-                    Button("Use Default") { settings.meetingsFolderPath = "" }
-                        .controlSize(.small)
-                        .buttonStyle(.link)
+            Spacer(minLength: 8)
+            switch status {
+            case .granted:
+                Label {
+                    Text("Allowed")
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 }
+                .foregroundStyle(.secondary)
+            case .denied:
+                Button("Open Settings") { Permissions.openSettings(for: kind) }
+            case .notDetermined:
+                if kind == .accessibility, model.awaitingAccessibility {
+                    if model.accessibilityStillOff {
+                        Button("Restart") { model.relaunch() }
+                    }
+                    Button("Open Settings") { model.request(kind) }
+                } else {
+                    Button("Allow") { model.request(kind) }
+                }
+            case nil:
+                EmptyView()
             }
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.08))
-        )
+        .controlSize(.small)
     }
 
-    private func chooseMeetingsFolder() {
+    private func caption(_ status: Permissions.Status?) -> String {
+        if status == .denied { return "Turned off in System Settings." }
+        guard kind == .accessibility, status == .notDetermined, model.awaitingAccessibility else { return kind.why }
+        return model.accessibilityStillOff
+            ? "Turn on Purr in System Settings. Already on? Restart Purr."
+            : "Turn on Purr in System Settings."
+    }
+}
+
+// Picks the folder meeting transcripts save to, from Settings.
+@MainActor
+enum MeetingsFolder {
+    static func choose() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -283,29 +482,25 @@ struct OnboardingView: View {
         panel.canCreateDirectories = true
         panel.prompt = "Choose"
         panel.message = "Choose a folder to save meeting transcripts"
-        if !settings.meetingsFolderPath.isEmpty {
-            panel.directoryURL = URL(fileURLWithPath: settings.meetingsFolderPath, isDirectory: true)
+        if !SettingsStore.shared.meetingsFolderPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: SettingsStore.shared.meetingsFolderPath, isDirectory: true)
         }
         if panel.runModal() == .OK, let url = panel.url {
-            // Probe-write now to force any macOS file-access prompt in context,
-            // instead of silently at the first meeting-stop. If the folder is in
-            // a TCC-protected location (Desktop/Documents/Downloads, a cloud or
-            // removable volume) and the user denies, we keep the previous setting
-            // rather than store an unwritable path that would later trigger the
-            // silent fallback to the default folder.
-            if canWriteMeetings(to: url) {
-                settings.meetingsFolderPath = url.path
+            // Probe-write now to force any macOS file-access prompt in context
+            // rather than silently at the first meeting-stop. On denial, keep
+            // the previous setting instead of storing an unwritable path that
+            // would later fall back to the default folder without explanation.
+            if canWrite(to: url) {
+                SettingsStore.shared.meetingsFolderPath = url.path
             } else {
-                warnFolderNotWritable(url)
+                warnNotWritable(url)
             }
         }
     }
 
-    // Writes and deletes a zero-byte probe file. The write is what triggers
-    // the macOS prompt for protected folders, so consent (or denial) is
-    // resolved here at selection time. Returns false if the folder isn't
-    // writable.
-    private func canWriteMeetings(to dir: URL) -> Bool {
+    // Writes and deletes a zero-byte probe file. The write is what triggers the
+    // macOS prompt for protected folders, resolving consent at selection time.
+    private static func canWrite(to dir: URL) -> Bool {
         let probe = dir.appendingPathComponent(".purr-write-probe-\(UUID().uuidString)")
         do {
             try Data().write(to: probe)
@@ -316,7 +511,7 @@ struct OnboardingView: View {
         }
     }
 
-    private func warnFolderNotWritable(_ url: URL) {
+    private static func warnNotWritable(_ url: URL) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Can't save meetings to that folder"
@@ -327,58 +522,5 @@ struct OnboardingView: View {
             it again. Until then, meetings keep saving to the default folder.
             """
         alert.runModal()
-    }
-
-    @ViewBuilder
-    private func permissionRow(kind: Permissions.Kind) -> some View {
-        let granted = status[kind] ?? false
-        // macOS hides Accessibility / Input Monitoring grants from the
-        // running process, so after the user visits System Settings the row
-        // asks for a relaunch instead of pretending the grant will appear.
-        let needsRestart = !granted && awaitingRestart.contains(kind)
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(granted ? .green : .secondary)
-                .font(.title3)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title).font(.body.weight(.medium))
-                Text(kind.why).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if needsRestart {
-                Button("Restart") { quitAndRelaunch() }
-                    .controlSize(.small)
-            } else if !granted {
-                Button("Grant") {
-                    switch kind {
-                    case .microphone:
-                        // Prompt only while undecided; if the user already
-                        // denied, the prompt never returns, so this deep-links
-                        // to System Settings instead. Status updates live, so
-                        // no restart needed.
-                        Permissions.grantMicrophone { refresh() }
-                    case .accessibility:
-                        // Request first - this registers the app in the
-                        // Accessibility list and shows the system prompt
-                        // on the very first call. Then open Settings so
-                        // the user can flip the toggle.
-                        Permissions.requestAccessibility()
-                        Permissions.openSettings(for: kind)
-                        awaitingRestart.insert(kind)
-                    case .inputMonitoring:
-                        Permissions.requestInputMonitoring()
-                        Permissions.openSettings(for: kind)
-                        awaitingRestart.insert(kind)
-                    }
-                }
-                .controlSize(.small)
-            }
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.08))
-        )
     }
 }
