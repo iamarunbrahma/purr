@@ -16,7 +16,8 @@ import FoundationModels
 // Both backends are asked for the same fenced text protocol; `parsePlan`
 // decodes it. Apple Foundation Models (macOS 26+) is the default; Gemma 4 E2B
 // via llama.cpp runs when picked in Settings › Voice Edit and on macOS 14-25,
-// sharing the summariser's weights.
+// sharing the summariser's weights. Once downloaded, Gemma also retries any
+// edit Apple's model can't make.
 @MainActor
 enum EditInterpreter {
     // Apple FM's 4096-token window is the tighter of the two backends; 4000
@@ -30,6 +31,7 @@ enum EditInterpreter {
         case selectionTooLong
         case emptyInstruction
         case interpretationFailed
+        case appleModelFailed
         case languageUnsupported
         case backend(Error)
 
@@ -43,6 +45,8 @@ enum EditInterpreter {
                 return "Didn't catch an edit. Try again."
             case .interpretationFailed:
                 return "Couldn't apply that edit. Try rephrasing it."
+            case .appleModelFailed:
+                return "Apple Intelligence couldn't make this edit. Try Gemma in Settings → Voice Edit."
             case .languageUnsupported:
                 return
                     "Voice Edit isn't available in this language. Switch to Gemma in Settings → Voice Edit."
@@ -100,30 +104,34 @@ enum EditInterpreter {
         guard !instruction.isEmpty else { throw Failure.emptyInstruction }
         guard selection.count <= maxSelectionCharacters else { throw Failure.selectionTooLong }
 
-        let plan = try await interpret(instruction: instruction, selection: selection)
-        let edited = try applyPlan(plan, to: selection)
-        return reconcile(edited, plan: plan, selection: selection, instruction: instruction)
-    }
-
-    // MARK: - Backend routing
-
-    private static func interpret(
-        instruction: String, selection: String
-    ) async throws
-        -> VoiceEditPlan
-    {
         if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
-                return try await interpretWithAppleFM(instruction: instruction, selection: selection)
+                do {
+                    let plan = try await interpretWithAppleFM(instruction: instruction, selection: selection)
+                    let edited = try edit(selection, with: plan, instruction: instruction)
+                    guard edited != selection.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                        log.info("Apple FM's edit changed nothing.")
+                        throw Failure.interpretationFailed
+                    }
+                    return edited
+                } catch Failure.languageUnsupported where LLMModelManager.isInstalled() {
+                    log.info("Apple FM rejected the instruction locale; retrying with Gemma.")
+                } catch Failure.interpretationFailed {
+                    // A refusal, or an edit Purr can't use. Gemma gets one try at
+                    // this edit; the next one starts with Apple's model again.
+                    guard LLMModelManager.isInstalled() else { throw Failure.appleModelFailed }
+                    log.info("Apple FM gave no usable edit; retrying with Gemma.")
+                }
             }
             #endif
         }
-        if LLMModelManager.isInstalled() {
-            return try await interpretWithGemma(instruction: instruction, selection: selection)
-        }
-        throw Failure.noBackend
+        guard LLMModelManager.isInstalled() else { throw Failure.noBackend }
+        let plan = try await interpretWithGemma(instruction: instruction, selection: selection)
+        return try edit(selection, with: plan, instruction: instruction)
     }
+
+    // MARK: - Backends
 
     #if canImport(FoundationModels)
     // Voice Edit rewrites the user's own text, which the default guardrails
@@ -160,17 +168,18 @@ enum EditInterpreter {
             if case .exceededContextWindowSize = error { throw Failure.selectionTooLong }
             // Apple FM can reject the instruction's language at generation time
             // even when `supportsLocale()` passed — it returns true for "close"
-            // languages too. Fall through to Gemma when installed, matching
-            // MeetingSummarizer's locale fallback.
-            if case .unsupportedLanguageOrLocale = error {
-                guard LLMModelManager.isInstalled() else {
-                    log.info("Apple FM rejected the instruction locale; Gemma not installed.")
-                    throw Failure.languageUnsupported
-                }
-                log.info("Apple FM rejected the instruction locale; retrying with Gemma.")
-                return try await interpretWithGemma(instruction: instruction, selection: selection)
+            // languages too. `apply` falls through to Gemma when installed,
+            // matching MeetingSummarizer's locale fallback.
+            if case .unsupportedLanguageOrLocale = error { throw Failure.languageUnsupported }
+            // Permissive guardrails don't throw for a text reply, but Apple's
+            // model can still refuse, so both count as an unusable reply.
+            switch error {
+            case .guardrailViolation, .refusal:
+                log.info("Apple FM declined the edit.")
+                throw Failure.interpretationFailed
+            default:
+                throw Failure.backend(error)
             }
-            throw Failure.backend(error)
         }
         guard let plan = parsePlan(raw) else {
             log.error("Apple FM edit plan did not parse; raw length \(raw.count, privacy: .public).")
@@ -215,6 +224,33 @@ enum EditInterpreter {
     }
 
     // MARK: - Apply the plan
+
+    // Throws interpretationFailed when the plan can't be applied.
+    private static func edit(
+        _ selection: String, with plan: VoiceEditPlan, instruction: String
+    ) throws -> String {
+        let plan = keepingWordsBeforeEndMark(plan, selection: selection, instruction: instruction)
+        let edited = try applyPlan(plan, to: selection)
+        return reconcile(edited, plan: plan, selection: selection, instruction: instruction)
+    }
+
+    // Apple's model sometimes answers "end with a period" on "...jammed again"
+    // with find "again", replace ".", which deletes the word. A lone mark that
+    // replaces the passage's last words goes after them instead.
+    private static func keepingWordsBeforeEndMark(
+        _ plan: VoiceEditPlan, selection: String, instruction: String
+    ) -> VoiceEditPlan {
+        guard case .targeted = plan.scope, namesEndMark(instruction) else { return plan }
+        let passage = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        var repaired = plan
+        repaired.edits = plan.edits.map { span in
+            let isLoneMark = !span.replace.isEmpty && span.replace.allSatisfy(terminators.contains)
+            let hasWords = span.find.contains { $0.isLetter || $0.isNumber }
+            guard isLoneMark, hasWords, passage.hasSuffix(span.find) else { return span }
+            return VoiceEditPlan.Span(find: span.find, replace: span.find + span.replace)
+        }
+        return repaired
+    }
 
     private static func applyPlan(_ plan: VoiceEditPlan, to selection: String) throws -> String {
         switch plan.scope {
@@ -289,6 +325,8 @@ enum EditInterpreter {
 
     // MARK: - Deterministic post-processing
 
+    private static let terminators: Set<Character> = [".", "?", "!", "…"]
+
     private static func reconcile(
         _ edited: String, plan: VoiceEditPlan, selection: String, instruction: String
     )
@@ -301,7 +339,6 @@ enum EditInterpreter {
         // there, model-chosen punctuation is intentional. So is a mark the
         // instruction names ("end with a period").
         guard case .targeted = plan.scope, !namesEndMark(instruction) else { return result }
-        let terminators: Set<Character> = [".", "?", "!", "…"]
         let selectionTerminated =
             lastNonWhitespace(of: selection).map(terminators.contains) ?? false
         guard !selectionTerminated else { return result }
