@@ -87,7 +87,7 @@ final class LlamaSession {
         self.vocab = v
 
         var ctxParams = llama_context_default_params()
-        // Covers a 24K-char transcript head/tail window (~6K prompt tokens of
+        // Covers a 24K-char piece of meeting transcript (~6K prompt tokens of
         // English) plus a 4096-token summary. The KV cache for it is ~216 MB.
         ctxParams.n_ctx = 12288
         ctxParams.n_batch = 512
