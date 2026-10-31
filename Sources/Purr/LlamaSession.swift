@@ -85,9 +85,8 @@ final class LlamaSession {
 
         var ctxParams = llama_context_default_params()
         // Covers a 24K-char transcript head/tail window (~6K prompt tokens of
-        // English) plus a 1000-token response. Gemma 4's sliding-window layers
-        // keep the KV cache small: 8192 costs ~80 MB more than 4096 did.
-        ctxParams.n_ctx = 8192
+        // English) plus a 4096-token summary. The KV cache for it is ~216 MB.
+        ctxParams.n_ctx = 12288
         ctxParams.n_batch = 512
         // Leave two cores for audio and UI. The cap of 8 mirrors the upstream
         // Swift example - more threads hurt than help on M-series.

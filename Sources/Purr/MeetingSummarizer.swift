@@ -62,8 +62,8 @@ final class MeetingSummarizer {
 
     // Hard ceiling on transcript characters fed to the model; longer meetings
     // get a head/tail truncation. 24K chars ≈ 6K tokens of English, leaving
-    // room for the system prompt and a 1000-token response in Gemma's
-    // 8192-token window. Apple FM's 4096 tokens take it in pieces.
+    // room for the system prompt and a 4096-token response in Gemma's
+    // 12288-token window. Apple FM's 4096 tokens take it in pieces.
     private static let maxTranscriptChars = 24_000
 
     // ~2,500 tokens of English per Apple FM piece, leaving the rest of its
@@ -607,14 +607,17 @@ final class MeetingSummarizer {
 
     private func generateWithWatchdog(transcript: String) async throws -> String {
         let prompt = chatPrompt(transcript: transcript)
+        // A busy meeting at the transcript cap needs ~2,000 tokens of minutes.
+        // 1.0 turns the repetition penalty off: minutes repeat their bullets
+        // and fields, and the penalty made Gemma drop due dates and decisions.
+        let parameters = LlamaSession.Parameters(maxTokens: 4096, repetitionPenalty: 1.0)
 
         // Cancelling `work` makes LlamaSession.generate throw .cancelled at the
         // next sampling step. A corrupt/missing GGUF surfaces as
         // modelLoadFailed, kept distinct from a generation failure.
         let work = Task<String, Error> {
             do {
-                return try await LlamaRuntime.shared.generate(
-                    prompt: prompt, parameters: .init())
+                return try await LlamaRuntime.shared.generate(prompt: prompt, parameters: parameters)
             } catch let error as LlamaSession.LlamaError {
                 if case .modelLoadFailed = error {
                     throw SummarizerError.modelLoadFailed(error)
