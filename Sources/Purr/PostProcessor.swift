@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import os.log
 
 // Deterministic post-processing passes (no LLM, no network) so they stay fast
@@ -141,7 +142,7 @@ struct PostProcessor {
             return outcome
         }
 
-        var t = backtrack.text
+        var t = Self.lowercaseAfterSpokenComma(backtrack.text)
         for category in Self.builtInCommandCatalog {
             for (pattern, replacement) in category.replacements {
                 t = t.replacingOccurrences(
@@ -154,6 +155,31 @@ struct PostProcessor {
         t = applyCustomCommands(t)
         outcome.text = t
         return outcome
+    }
+
+    // The ASR model often hears a spoken "comma" as the end of a sentence
+    // ("Hello there, comma. Does it work?"). The comma command swallows that
+    // period but not the capital it caused, so this lowercases the word first.
+    // Same for "semicolon". "I", words with other capitals and names keep theirs.
+    private static func lowercaseAfterSpokenComma(_ text: String) -> String {
+        guard
+            let regex = try? NSRegularExpression(
+                pattern: #"\b(?i:comma|semicolon)\b[.?!][ \t]+(\p{Lu}[\p{Ll}'’]*)(?![\p{L}'’])"#)
+        else { return text }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        guard !matches.isEmpty else { return text }
+        let names = NLTagger(tagSchemes: [.nameType])
+        names.string = text
+        let result = NSMutableString(string: text)
+        for match in matches.reversed() {
+            guard let range = Range(match.range(at: 1), in: text) else { continue }
+            let word = text[range]
+            if word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’") { continue }
+            let tag = names.tag(at: range.lowerBound, unit: .word, scheme: .nameType).0
+            if let tag, [.personalName, .placeName, .organizationName].contains(tag) { continue }
+            result.replaceCharacters(in: match.range(at: 1), with: word.lowercased())
+        }
+        return result as String
     }
 
     // Sentence-level "scratch that" / "delete that" backtrack. Returns the text

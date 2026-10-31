@@ -79,6 +79,8 @@ final class AppCoordinator: ObservableObject {
     @Published private(set) var eouDownloadProgress: ModelDownloadProgress?
     // Unlike the other two, this one never auto-downloads during warmup.
     @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
+    // The Whisper model in its first Neural Engine compile, for Settings.
+    @Published private(set) var compilingWhisperModel: String?
 
     // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the
     // glyph - and canQuitSafely().
@@ -411,11 +413,18 @@ final class AppCoordinator: ObservableObject {
 
     private func rebuildEngine(initial: Bool) {
         let chosen = SettingsStore.shared.engine
+        compilingWhisperModel = nil
         switch chosen {
         case .parakeet:
             engine = parakeet
         case .whisper:
-            engine = WhisperEngine(modelName: SettingsStore.shared.modelName)
+            let whisper = WhisperEngine(modelName: SettingsStore.shared.modelName)
+            // A replaced engine's load runs on, but Settings shows this one's.
+            whisper.onCompilingChange = { [weak self, weak whisper] compiling in
+                guard let self, let whisper, self.engine === whisper else { return }
+                self.compilingWhisperModel = compiling ? whisper.modelIdentifier : nil
+            }
+            engine = whisper
         }
         if !initial {
             log.info("Engine switched to \(chosen.rawValue, privacy: .public)")
@@ -652,10 +661,13 @@ final class AppCoordinator: ObservableObject {
         // can't pass for a stuck transcription.
         let needsLoad = !engine.isLoaded
         if needsLoad {
-            hud.show(engine.needsDownload ? .downloadingModel : .loadingModel)
+            hud.show(engine.loadingMode)
         } else {
             hud.show(.transcribing)
         }
+        // A first compile can keep the text waiting for minutes, long enough
+        // to have moved on to another app.
+        let dictatedInto = NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         // Parakeet TDT hallucinates whole utterances on too-quiet input
         // ("How are you doing?" -> "What were you giving?" is the classic
@@ -682,6 +694,15 @@ final class AppCoordinator: ObservableObject {
                 } else {
                     hud.hide()
                 }
+            } else if SettingsStore.shared.autoPaste, needsLoad,
+                NSWorkspace.shared.frontmostApplication?.processIdentifier != dictatedInto
+            {
+                log.info("Switched apps during the model wait - copying instead of pasting.")
+                copyToClipboard(processed.text)
+                state = .idle
+                hud.showMessage(
+                    "You switched apps while the model loaded, so the text is on the clipboard.",
+                    icon: .copied, autoHideAfter: 4)
             } else if SettingsStore.shared.autoPaste {
                 log.info("Pasting \(processed.text.count, privacy: .public) characters.")
                 inserter.insert(processed.text + " ")

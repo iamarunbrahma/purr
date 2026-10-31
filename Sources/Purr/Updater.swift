@@ -6,18 +6,21 @@ import os.log
 
 // In-app updater backed by GitHub Releases.
 //
-// The install helper waits for our PID to exit, mounts the DMG, verifies the
-// embedded .app's codesign seal, ditto-copies it over the running bundle,
-// strips quarantine, detaches, and relaunches. The codesign gate runs *before*
-// we touch the running app, so a corrupt download cannot destroy the install.
+// Before quitting, Purr mounts the downloaded DMG and checks the app inside
+// with codesign, so an update it would refuse is reported while Purr is still
+// running. The install helper then waits for our PID to exit, mounts the DMG,
+// checks the app again, ditto-copies it over the running bundle, strips
+// quarantine, detaches, and relaunches. The helper's gate runs *before* it
+// touches the running app, so a bad DMG cannot destroy the install, and a
+// refusal reopens the old app.
 //
 // Releases are signed with a stable Developer ID (Team 5JCFRMC367), so TCC
 // keys off the designated requirement rather than a per-build cdhash and
 // Accessibility and Microphone grants survive an update. They are lost
 // only if the bundle ID or signing identity changes.
 //
-// The helper's codesign gate also requires our bundle ID and Team ID, so an
-// app someone else signed is refused even when the release ships a matching
+// Both codesign checks also require our bundle ID and Team ID, so an app
+// someone else signed is refused even when the release ships a matching
 // SHA-256 sidecar. The sidecar comes from the same release, so on its own it
 // only catches a corrupt download.
 //
@@ -46,6 +49,10 @@ final class Updater: ObservableObject {
     private static let repoAPI = URL(
         string: "https://api.github.com/repos/iamarunbrahma/purr"
     )!
+
+    // Our bundle ID and Team ID on a certificate Apple issued.
+    private static let signingRequirement =
+        #"identifier "com.arunbrahma.purr" and anchor apple generic and certificate leaf[subject.OU] = "5JCFRMC367""#
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "updater")
     private var downloader: UpdateDownloader?
@@ -139,12 +146,13 @@ final class Updater: ObservableObject {
     }
 
     // Each phase publishes its own state transition, so chaining them still
-    // renders progress and errors without a second button press.
+    // renders progress and errors without a second button press. A recording
+    // started during the download leaves the update ready to install.
     @MainActor
-    func updatePurr() async {
+    func updatePurr(canQuit: () -> Bool) async {
         await downloadUpdate()
-        guard case .readyToInstall = state else { return }
-        installAndRelaunch()
+        guard case .readyToInstall = state, canQuit() else { return }
+        await installAndRelaunch()
     }
 
     @MainActor
@@ -291,9 +299,19 @@ final class Updater: ObservableObject {
     }
 
     @MainActor
-    func installAndRelaunch() {
-        guard case .readyToInstall(let dmgPath, _) = state else { return }
+    func installAndRelaunch() async {
+        guard case .readyToInstall(let dmgPath, let version) = state else { return }
         state = .installing
+        guard FileManager.default.fileExists(atPath: dmgPath.path) else {
+            state = .error("The downloaded update is gone. Try again to download it.")
+            return
+        }
+        guard await Self.appInDMGIsSignedByUs(dmgPath) else {
+            try? FileManager.default.removeItem(at: dmgPath)
+            log.error("Update refused: the app in the DMG doesn't meet the signing requirement.")
+            state = .error("This update isn't signed by Purr's developer, so it wasn't installed.")
+            return
+        }
         do {
             let scriptPath = try writeInstallScript()
             let appPath = Bundle.main.bundlePath
@@ -306,13 +324,46 @@ final class Updater: ObservableObject {
             try task.run()
 
             // Let the helper reach its kill -0 loop before we terminate.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                NSApp.terminate(nil)
-            }
+            try? await Task.sleep(for: .milliseconds(200))
+            NSApp.terminate(nil)
+            // Only returns when the quit alert was cancelled, so stop the helper
+            // before it installs under the running app.
+            task.terminate()
+            try? FileManager.default.removeItem(atPath: scriptPath)
+            log.info("Quit cancelled; the update stays ready to install.")
+            state = .readyToInstall(dmgPath: dmgPath, version: version)
         } catch {
             log.error("Install bootstrap failed: \(error.localizedDescription, privacy: .public)")
             state = .error("Could not launch installer: \(error.localizedDescription)")
         }
+    }
+
+    // The helper's gate, run while Purr can still say why it refused. The DMG
+    // is mounted read-only, where Finder won't show it.
+    private static func appInDMGIsSignedByUs(_ dmgPath: URL) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            let mount = fm.temporaryDirectory.appendingPathComponent("purr-verify-\(UUID().uuidString)")
+            guard (try? fm.createDirectory(at: mount, withIntermediateDirectories: false)) != nil else { return false }
+            // rmdir, not removeItem: it never deletes a volume still mounted there.
+            defer { rmdir(mount.path) }
+            let attach = Uninstaller.runToCompletion(
+                "/usr/bin/hdiutil",
+                [
+                    "attach", "-nobrowse", "-noautoopen", "-noverify", "-readonly",
+                    "-mountpoint", mount.path, dmgPath.path,
+                ],
+                timeout: 120)
+            guard attach?.status == 0 else { return false }
+            defer { _ = Uninstaller.runToCompletion("/usr/bin/hdiutil", ["detach", "-force", "-quiet", mount.path]) }
+            guard let name = try? fm.contentsOfDirectory(atPath: mount.path).first(where: { $0.hasSuffix(".app") })
+            else { return false }
+            let app = mount.appendingPathComponent(name).path
+            let verify = Uninstaller.runToCompletion(
+                "/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=\(Self.signingRequirement)", app],
+                timeout: 120)
+            return verify?.status == 0
+        }.value
     }
 
     // MARK: - Helpers
@@ -324,11 +375,13 @@ final class Updater: ObservableObject {
         // cp -R drops, which would break the signature seal.
         // hdiutil -nobrowse keeps Finder from popping the volume; -noverify
         // skips the integrity-check delay.
+        // The wait gives up after 10 minutes without installing: Purr still
+        // running means its quit didn't happen.
         // codesign --verify --deep --strict (Apple TN2206) checks the seal and
         // -R checks the signer: our bundle ID and Team ID on an Apple-issued
         // certificate. Keep the = after -R, or codesign reads the requirement
         // as a file path. It runs BEFORE rm -rf'ing the live install so a bad
-        // DMG cannot brick the app.
+        // DMG cannot brick the app, and every refusal reopens the old app.
         // xattr -dr com.apple.quarantine prevents the "Are you sure you want to
         // open?" prompt LaunchServices attaches to URLSession downloads; only
         // stripped once the codesign gate passes.
@@ -342,7 +395,7 @@ final class Updater: ObservableObject {
             i=0
             while kill -0 "$PARENT_PID" 2>/dev/null; do
                 i=$((i+1))
-                if [ "$i" -gt 150 ]; then break; fi
+                if [ "$i" -gt 3000 ]; then exit 3; fi
                 sleep 0.2
             done
 
@@ -351,19 +404,22 @@ final class Updater: ObservableObject {
                 | awk -F'\\t' '{print $NF}' \
                 | sed 's/^ *//;s/ *$//')
             if [ -z "$MOUNT" ] || [ ! -d "$MOUNT" ]; then
+                open "$APP"
                 exit 1
             fi
 
             SRC=$(find "$MOUNT" -maxdepth 1 -name "*.app" -type d | head -n1)
             if [ -z "$SRC" ]; then
                 hdiutil detach -force -quiet "$MOUNT" >/dev/null 2>&1
+                open "$APP"
                 exit 1
             fi
 
             if ! /usr/bin/codesign --verify --deep --strict \
-                -R='identifier "com.arunbrahma.purr" and anchor apple generic and certificate leaf[subject.OU] = "5JCFRMC367"' \
+                -R='\(Self.signingRequirement)' \
                 "$SRC" >/dev/null 2>&1; then
                 hdiutil detach -force -quiet "$MOUNT" >/dev/null 2>&1
+                open "$APP"
                 exit 2
             fi
 

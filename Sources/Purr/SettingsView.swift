@@ -834,9 +834,14 @@ private struct ModelsPane: View {
 // ----------------------------------------------------------------------
 
 extension ModelStore.Status {
-    // Worth a row in a feature's own pane: missing or downloading. The
-    // Models pane lists every model either way.
-    var needsAttention: Bool { !isOnDisk || download != nil }
+    // A download, or Whisper's first compile after one.
+    var progress: ModelDownloadProgress? {
+        download ?? (isCompiling ? ModelDownloadProgress(stage: .compiling, fraction: nil) : nil)
+    }
+
+    // Worth a row in a feature's own pane: missing, downloading or compiling.
+    // The Models pane lists every model either way.
+    var needsAttention: Bool { !isOnDisk || progress != nil }
 }
 
 extension ModelDownloadProgress {
@@ -885,7 +890,7 @@ struct ModelRow: View {
                 Spacer(minLength: 8)
                 trailing(status)
             }
-            if let progress = status.download {
+            if let progress = status.progress {
                 ProgressView(value: progress.fraction)
                     .progressViewStyle(.linear)
                     .controlSize(.small)
@@ -911,7 +916,7 @@ struct ModelRow: View {
 
     @ViewBuilder
     private func trailing(_ status: ModelStore.Status) -> some View {
-        if let progress = status.download {
+        if let progress = status.progress {
             Text(progress.label)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)

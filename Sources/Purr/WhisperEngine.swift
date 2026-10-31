@@ -25,7 +25,23 @@ final class WhisperEngine: TranscriptionEngine {
     var isLoaded: Bool { loadedModel == modelIdentifier && pipe != nil }
     // Settings is the only path that downloads Whisper models.
     var needsDownload: Bool { false }
+    // A model's first load compiles it for this Mac's Neural Engine, and so
+    // does the first after a macOS update. A load marks the model's folder, so
+    // a deleted or re-downloaded model starts unmarked.
+    var needsCompile: Bool {
+        ModelManager.isInstalled(modelIdentifier)
+            && (try? String(contentsOf: compiledMarker, encoding: .utf8))
+                != ProcessInfo.processInfo.operatingSystemVersionString
+    }
     var isStreamingLoaded: Bool { false }
+
+    // Told when a load that compiles starts and ends, for Settings.
+    var onCompilingChange: ((Bool) -> Void)?
+
+    private var compiledMarker: URL {
+        ModelManager.modelsDirectory.appendingPathComponent(modelIdentifier, isDirectory: true)
+            .appendingPathComponent(".compiled")
+    }
 
     // Pre-loads the model so the first dictation doesn't pay the disk-load cost.
     // Same-model warmups are no-ops, and one already loading is joined rather
@@ -38,19 +54,22 @@ final class WhisperEngine: TranscriptionEngine {
             await inFlight.value
             return
         }
+        let compiling = needsCompile
+        if compiling { onCompilingChange?(true) }
         let task = Task { [weak self] () -> Void in
             await self?.loadPipe()
         }
         loadTask = task
-        defer { if loadTask == task { loadTask = nil } }
+        defer {
+            if loadTask == task { loadTask = nil }
+            if compiling { onCompilingChange?(false) }
+        }
         await task.value
     }
 
-    // A Large model's first load can spend minutes compiling for the Neural
-    // Engine, longer than modelLoadTimeout allows.
-    private var loadLimit: Duration {
-        modelIdentifier.contains("large") ? .seconds(300) : modelLoadTimeout
-    }
+    // The first compile can take the Large models many minutes on some Macs,
+    // longer than modelLoadTimeout allows.
+    private var loadLimit: Duration { needsCompile ? .seconds(20 * 60) : modelLoadTimeout }
 
     func load() async throws {
         if isLoaded { return }
@@ -86,6 +105,8 @@ final class WhisperEngine: TranscriptionEngine {
             let pipe = try await WhisperKit(cfg)
             self.pipe = pipe
             self.loadedModel = modelIdentifier
+            try? ProcessInfo.processInfo.operatingSystemVersionString.write(
+                to: compiledMarker, atomically: true, encoding: .utf8)
             log.notice(
                 "Whisper \(self.modelIdentifier, privacy: .public) loaded in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s."
             )

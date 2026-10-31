@@ -11,9 +11,13 @@ enum ModelManager {
 
     // Whisper Large V3 Turbo: 4 decoder layers (vs 32 in Large V3), ~6× decode
     // speed. The `_632MB` suffix selects argmax's quantised CoreML build, which fits
-    // in memory and runs on the ANE on every supported Mac; the un-suffixed variant
-    // is full-precision and ~1.5 GB, so we deliberately don't surface it.
-    static let defaultModel = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    // in memory and runs on the ANE; the un-suffixed variant is full-precision and
+    // ~1.5 GB, so we deliberately don't surface it. WhisperKit's device table leaves
+    // this build off for M1 Macs, where its first Neural Engine compile is known to
+    // be very slow, so those don't list it and default to Large V3.
+    private static let turboModel = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    private static let disabledOnThisMac = Set(WhisperKit.recommendedModels().disabled)
+    static let defaultModel = disabledOnThisMac.contains(turboModel) ? "openai_whisper-large-v3_947MB" : turboModel
     static let modelRepo = "argmaxinc/whisperkit-coreml"
 
     // Curated list shown in Settings: WhisperKit's repo has dozens of variants, and
@@ -63,13 +67,13 @@ enum ModelManager {
             supportsTranslation: true
         ),
         ModelChoice(
-            id: "openai_whisper-large-v3-v20240930_turbo_632MB",
+            id: turboModel,
             label: "Large V3 Turbo",
             sizeMB: 616,
             note: "Best quality at real-time speed on Apple Silicon.",
             supportsTranslation: false
         ),
-    ]
+    ].filter { !disabledOnThisMac.contains($0.id) }
 
     // Unknown / uncurated names default to false so the engine never asks a model
     // to translate when it can't.
@@ -187,14 +191,16 @@ enum ModelManager {
     }
 
     // Removes every downloaded model in one sweep: Whisper checkpoints, the Gemma
-    // GGUF, and the FluidAudio CoreML bundles. Meeting transcripts live in a sibling
-    // folder and are deliberately left alone. Callers MUST release any in-memory
-    // model sessions first so a deleted file isn't left mmap'd behind a live handle.
+    // GGUF, and the FluidAudio CoreML bundles, then what Core ML compiled from
+    // them. Meeting transcripts live in a sibling folder and are deliberately left
+    // alone. Callers MUST release any in-memory model sessions first so a deleted
+    // file isn't left mmap'd behind a live handle.
     static func deleteAllModels() throws {
         let dir = modelsDirectory
         if FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.removeItem(at: dir)
         }
+        CompiledModelCache.removeAll()
     }
 }
 

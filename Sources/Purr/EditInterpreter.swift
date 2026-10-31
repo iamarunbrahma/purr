@@ -80,7 +80,7 @@ enum EditInterpreter {
         if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
-                LanguageModelSession(instructions: systemPrompt).prewarm()
+                editSession().prewarm()
             }
             #endif
             return
@@ -102,7 +102,7 @@ enum EditInterpreter {
 
         let plan = try await interpret(instruction: instruction, selection: selection)
         let edited = try applyPlan(plan, to: selection)
-        return reconcile(edited, plan: plan, selection: selection)
+        return reconcile(edited, plan: plan, selection: selection, instruction: instruction)
     }
 
     // MARK: - Backend routing
@@ -126,6 +126,15 @@ enum EditInterpreter {
     }
 
     #if canImport(FoundationModels)
+    // Voice Edit rewrites the user's own text, which the default guardrails
+    // can refuse: they flagged "End with a period." on "hello world".
+    @available(macOS 26.0, *)
+    private static func editSession() -> LanguageModelSession {
+        LanguageModelSession(
+            model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
+            instructions: systemPrompt)
+    }
+
     @available(macOS 26.0, *)
     private static func interpretWithAppleFM(
         instruction: String, selection: String
@@ -134,7 +143,7 @@ enum EditInterpreter {
     {
         // A fresh session per edit - reusing one would accumulate prior turns
         // against the 4096-token context budget.
-        let session = LanguageModelSession(instructions: systemPrompt)
+        let session = editSession()
         let prompt = """
             \(formatSpec)
 
@@ -281,7 +290,7 @@ enum EditInterpreter {
     // MARK: - Deterministic post-processing
 
     private static func reconcile(
-        _ edited: String, plan: VoiceEditPlan, selection: String
+        _ edited: String, plan: VoiceEditPlan, selection: String, instruction: String
     )
         -> String
     {
@@ -289,8 +298,9 @@ enum EditInterpreter {
         // A targeted edit is interior and must not change the passage's ending
         // punctuation, so strip a terminator the edit introduced (ASR
         // completing the spoken phrase). Holistic rewrites are left alone —
-        // there, model-chosen punctuation is intentional.
-        guard case .targeted = plan.scope else { return result }
+        // there, model-chosen punctuation is intentional. So is a mark the
+        // instruction names ("end with a period").
+        guard case .targeted = plan.scope, !namesEndMark(instruction) else { return result }
         let terminators: Set<Character> = [".", "?", "!", "…"]
         let selectionTerminated =
             lastNonWhitespace(of: selection).map(terminators.contains) ?? false
@@ -333,6 +343,13 @@ enum EditInterpreter {
 
     private static func lastNonWhitespace(of text: String) -> Character? {
         text.reversed().first { !$0.isWhitespace }
+    }
+
+    // English only, like the voice commands that name the same marks.
+    private static func namesEndMark(_ instruction: String) -> Bool {
+        instruction.range(
+            of: #"\b(period|full stop|question mark|exclamation|ellipsis)\b"#,
+            options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     // MARK: - Response parsing

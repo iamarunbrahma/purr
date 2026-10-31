@@ -14,6 +14,7 @@ final class RecordingHUD {
         case recording
         case loadingModel
         case downloadingModel
+        case optimizingModel
         case transcribing
         case meeting(elapsed: TimeInterval)
         case voiceEdit
@@ -326,6 +327,7 @@ final class HUDModel: ObservableObject {
         case .recording: return "Listening"
         case .loadingModel: return "Loading model"
         case .downloadingModel: return "Downloading model"
+        case .optimizingModel: return "Optimizing model for this Mac"
         case .transcribing: return "Transcribing"
         case .voiceEdit: return "Voice Edit"
         case .meeting(let t): return "Meeting · \(Self.formatElapsed(t))"
@@ -374,7 +376,7 @@ private struct HUDView: View {
                     Image(systemName: "record.circle.fill")
                         .foregroundStyle(.red)
                         .frame(width: 38, height: 24)
-                case .loadingModel:
+                case .loadingModel, .optimizingModel:
                     Image(systemName: "cpu.fill")
                         .foregroundStyle(.white)
                         .frame(width: 38, height: 24)

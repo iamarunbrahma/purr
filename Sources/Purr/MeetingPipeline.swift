@@ -55,6 +55,13 @@ final class MeetingPipeline: ObservableObject {
     // dictation it pauses, forever.
     private static let modelLoadLimit: Duration = .seconds(600)
 
+    // FluidAudio's offline diarizer runs at over 100x real time, so this
+    // gives a slow Mac 10x, plus time to load its models. Past it, the
+    // meeting is saved without speaker labels rather than held.
+    private static func diarizationLimit(samples: Int) -> Duration {
+        modelLoadTimeout + .seconds(Double(samples) / 16_000 / 10)
+    }
+
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "meeting")
 
     init(parakeet: ParakeetEngine, hud: RecordingHUD, summarizer: MeetingSummarizer) {
@@ -255,7 +262,11 @@ final class MeetingPipeline: ObservableObject {
                 let cleanedMic = await Task.detached {
                     EchoCanceller.process(mic: samples, reference: systemSamples)
                 }.value
-                async let remoteSegmentsTask = diarizer.diarize(samples: systemSamples)
+                let diarize: @Sendable () async throws -> [TimedSpeakerSegment] = { [diarizer] in
+                    try await diarizer.diarize(samples: systemSamples)
+                }
+                async let remoteSegmentsTask = withTimeout(
+                    Self.diarizationLimit(samples: systemSamples.count), operation: diarize)
                 let remoteASR = try await transcribeMeetingAudio(samples: systemSamples)
                 let localASR = try await transcribeMeetingAudio(samples: cleanedMic)
                 // A diarization failure (no remote speech, music, silence)
@@ -264,6 +275,11 @@ final class MeetingPipeline: ObservableObject {
                 let remoteSegments: [TimedSpeakerSegment]
                 do {
                     remoteSegments = try await remoteSegmentsTask
+                } catch is TimedOutError {
+                    log.error(
+                        "Meeting diarization ran past its limit - saving transcripts without remote speaker labels."
+                    )
+                    remoteSegments = []
                 } catch {
                     log.error(
                         "Meeting diarization failed on the system track (\(error.localizedDescription, privacy: .public)) - saving transcripts without remote speaker labels."

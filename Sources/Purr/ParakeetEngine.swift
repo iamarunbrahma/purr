@@ -58,6 +58,8 @@ final class ParakeetEngine: TranscriptionEngine {
 
     var isLoaded: Bool { batchManager != nil }
     var needsDownload: Bool { !Self.batchIsInstalled() }
+    // Its first compile fits in modelLoadTimeout.
+    var needsCompile: Bool { false }
     var isStreamingLoaded: Bool { streamingManager != nil }
     var isMeetingModelLoaded: Bool { meetingBatchManager != nil }
 
