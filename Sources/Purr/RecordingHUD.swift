@@ -12,6 +12,8 @@ final class RecordingHUD {
     enum Mode: Equatable {
         case warmingUp
         case recording
+        case loadingModel
+        case downloadingModel
         case transcribing
         case meeting(elapsed: TimeInterval)
         case voiceEdit
@@ -63,9 +65,11 @@ final class RecordingHUD {
         scheduleSettledResize()
     }
 
-    func showMessage(_ text: String, autoHideAfter seconds: TimeInterval = 1.5) {
+    // `icon` is the mode whose icon leads the message: the error triangle
+    // unless a step's own icon fits better.
+    func showMessage(_ text: String, icon: Mode = .error, autoHideAfter seconds: TimeInterval = 1.5) {
         autoHideTask?.cancel()
-        model.mode = .error
+        model.mode = icon
         model.message = text
         if window == nil { build() }
         resizeToFitContent()
@@ -320,6 +324,8 @@ final class HUDModel: ObservableObject {
         switch mode {
         case .warmingUp: return "Warming up…"
         case .recording: return "Listening"
+        case .loadingModel: return "Loading model"
+        case .downloadingModel: return "Downloading model"
         case .transcribing: return "Transcribing"
         case .voiceEdit: return "Voice Edit"
         case .meeting(let t): return "Meeting · \(Self.formatElapsed(t))"
@@ -367,6 +373,14 @@ private struct HUDView: View {
                 case .meeting:
                     Image(systemName: "record.circle.fill")
                         .foregroundStyle(.red)
+                        .frame(width: 38, height: 24)
+                case .loadingModel:
+                    Image(systemName: "cpu.fill")
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 24)
+                case .downloadingModel:
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundStyle(.white)
                         .frame(width: 38, height: 24)
                 case .warmingUp, .transcribing, .summarizing:
                     ProgressView()

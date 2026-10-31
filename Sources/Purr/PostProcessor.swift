@@ -2,8 +2,8 @@ import Foundation
 import os.log
 
 // Deterministic post-processing passes (no LLM, no network) so they stay fast
-// (<5ms total on M2) and predictable. Order matters: filler trim → voice
-// commands → capitals → dictionary → spacing cleanup.
+// and predictable. Order matters: filler trim → voice commands → capitals →
+// dictionary → spacing cleanup.
 struct PostProcessor {
     var trimFillers: Bool
     var customFillerWords: [FillerWordEntry]
@@ -274,15 +274,17 @@ struct PostProcessor {
             ]),
         // Sentence punctuation also absorbs a mark the ASR model already put on
         // either side of the spoken command ("questions, question mark." ->
-        // "questions?", not "questions,?"). Spaces are only taken along with a
-        // leading mark: a bare "close quote period" must keep its " ." apart so
-        // the quote's own `\.?` can't swallow the period. Semicolon and colon
-        // take the space before them too, since the cleanup in apply() leaves
-        // ; and : alone for the emoji faces.
+        // "questions?", not "questions,?"). Before the command that's , . ; :
+        // or the command's own mark ("work? Question mark." -> "work?"), so
+        // "question mark exclamation mark" still gives "?!". Spaces are only
+        // taken along with a leading mark: a bare "close quote period" must
+        // keep its " ." apart so the quote's own `\.?` can't swallow the
+        // period. Semicolon and colon take the space before them too, since
+        // the cleanup in apply() leaves ; and : alone for the emoji faces.
         CommandCategory(
             replacements: [
-                (#"(?:[,.;:][ \t]*)?\bquestion mark\b[,.;:?!]?"#, "?"),
-                (#"(?:[,.;:][ \t]*)?\bexclamation (?:point|mark)\b[,.;:?!]?"#, "!"),
+                (#"(?:[,.;:?][ \t]*)?\bquestion mark\b[,.;:?!]?"#, "?"),
+                (#"(?:[,.;:!][ \t]*)?\bexclamation (?:point|mark)\b[,.;:?!]?"#, "!"),
                 (#"(?:[,.;:][ \t]*)?\bfull stop\b[,.;:?!]?"#, "."),
                 (#"(?:[,.;:][ \t]*)?\bperiod\b[,.;:?!]?"#, "."),
                 (#"(?:[,.;:][ \t]*)?\bcomma\b[,.;:?!]?"#, ","),

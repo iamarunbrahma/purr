@@ -488,6 +488,13 @@ final class AppCoordinator: ObservableObject {
         if safeToQuit != next { safeToQuit = next }
     }
 
+    // For the quit alert, which says what Quit Anyway does to a meeting.
+    var meetingQuitStage: MeetingPipeline.QuitStage? { meeting?.quitStage }
+
+    func saveMeetingAudioBeforeQuit() {
+        meeting?.saveAudioBeforeQuit()
+    }
+
     private func refreshMenuBarStatus() {
         let next = computeMenuBarStatus()
         if menuBarStatus != next { menuBarStatus = next }
@@ -641,7 +648,14 @@ final class AppCoordinator: ObservableObject {
             return
         }
         state = .transcribing
-        hud.show(.transcribing)
+        // Waiting on the model is its own HUD step, so a slow or stuck load
+        // can't pass for a stuck transcription.
+        let needsLoad = !engine.isLoaded
+        if needsLoad {
+            hud.show(engine.needsDownload ? .downloadingModel : .loadingModel)
+        } else {
+            hud.show(.transcribing)
+        }
 
         // Parakeet TDT hallucinates whole utterances on too-quiet input
         // ("How are you doing?" -> "What were you giving?" is the classic
@@ -654,6 +668,10 @@ final class AppCoordinator: ObservableObject {
         let micWasVeryQuiet = prepared.originalPeakDbFS < -45
 
         do {
+            if needsLoad {
+                try await engine.load()
+                hud.show(.transcribing)
+            }
             let raw = try await engine.transcribe(samples: prepared.samples)
             let processed = makePostProcessor().apply(raw)
             if processed.text.isEmpty {
@@ -694,6 +712,8 @@ final class AppCoordinator: ObservableObject {
     private func beginStreamingRecording() {
         streamingStartupInFlight = true
         releasedDuringStartup = false
+        // Otherwise nothing shows while the press waits on Smart Typing's model.
+        if !engine.isStreamingLoaded { hud.show(.loadingModel) }
         Task {
             do {
                 let session = try await engine.makeStreamingSession()
@@ -828,6 +848,14 @@ final class AppCoordinator: ObservableObject {
     // that pass fails.
     private func batchQualityText(audio: [Float], streamed: String) async -> String {
         postLog.debug("streamed: '\(streamed, privacy: .public)'")
+        // Live typing doesn't wait on the batch model, which can still be
+        // loading just after launch: until it's in, sentences paste as
+        // streamed, and warmup joins that load or retries one that failed.
+        guard engine.isLoaded else {
+            log.notice("Batch model not loaded yet, pasting the streamed text.")
+            Task { [engine] in await engine.warmup() }
+            return streamed
+        }
         do {
             let prepared = AudioPreprocessor.normalize(audio)
             return try await engine.transcribe(samples: prepared.samples)

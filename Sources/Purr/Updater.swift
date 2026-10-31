@@ -16,10 +16,10 @@ import os.log
 // Accessibility and Microphone grants survive an update. They are lost
 // only if the bundle ID or signing identity changes.
 //
-// Caveat: the helper's codesign gate is NOT pinned to our Team ID - any bundle
-// with a valid Developer ID signature passes. Pinning with `codesign -R`
-// against 5JCFRMC367 is the outstanding fix; until then the SHA-256 sidecar is
-// what ties the download to a release we published.
+// The helper's codesign gate also requires our bundle ID and Team ID, so an
+// app someone else signed is refused even when the release ships a matching
+// SHA-256 sidecar. The sidecar comes from the same release, so on its own it
+// only catches a corrupt download.
 //
 // The class stays non-isolated with @MainActor methods so AppDelegate (which
 // can't be @MainActor because main.swift initialises it from a synchronous
@@ -166,9 +166,9 @@ final class Updater: ObservableObject {
         downloader = dl
         do {
             let path = try await dl.download(from: dmgURL)
-            // The helper's codesign gate is unpinned, so the sidecar is the
-            // only thing tying this download to a release we published. Its
-            // absence is fatal: refuse rather than install an unverified binary.
+            // The sidecar catches a corrupt download while Purr can still show
+            // an error. The helper runs after we quit and can't report one.
+            // A release without a sidecar is refused.
             guard let sha256URL else {
                 try? FileManager.default.removeItem(at: path)
                 log.error(
@@ -324,10 +324,11 @@ final class Updater: ObservableObject {
         // cp -R drops, which would break the signature seal.
         // hdiutil -nobrowse keeps Finder from popping the volume; -noverify
         // skips the integrity-check delay.
-        // codesign --verify --deep --strict mirrors Gatekeeper (Apple TN2206)
-        // and runs BEFORE rm -rf'ing the live install so a bad DMG cannot brick
-        // the app. It is unpinned: add -R "anchor apple generic and certificate
-        // leaf[subject.OU] = 5JCFRMC367" to also require our own signature.
+        // codesign --verify --deep --strict (Apple TN2206) checks the seal and
+        // -R checks the signer: our bundle ID and Team ID on an Apple-issued
+        // certificate. Keep the = after -R, or codesign reads the requirement
+        // as a file path. It runs BEFORE rm -rf'ing the live install so a bad
+        // DMG cannot brick the app.
         // xattr -dr com.apple.quarantine prevents the "Are you sure you want to
         // open?" prompt LaunchServices attaches to URLSession downloads; only
         // stripped once the codesign gate passes.
@@ -359,7 +360,9 @@ final class Updater: ObservableObject {
                 exit 1
             fi
 
-            if ! /usr/bin/codesign --verify --deep --strict "$SRC" >/dev/null 2>&1; then
+            if ! /usr/bin/codesign --verify --deep --strict \
+                -R='identifier "com.arunbrahma.purr" and anchor apple generic and certificate leaf[subject.OU] = "5JCFRMC367"' \
+                "$SRC" >/dev/null 2>&1; then
                 hdiutil detach -force -quiet "$MOUNT" >/dev/null 2>&1
                 exit 2
             fi

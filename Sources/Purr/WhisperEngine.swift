@@ -15,18 +15,60 @@ final class WhisperEngine: TranscriptionEngine {
 
     private var pipe: WhisperKit?
     private var loadedModel: String?
+    private var loadTask: Task<Void, Never>?
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "whisper")
 
     init(modelName: String) {
         self.modelIdentifier = modelName
     }
 
+    var isLoaded: Bool { loadedModel == modelIdentifier && pipe != nil }
+    // Settings is the only path that downloads Whisper models.
+    var needsDownload: Bool { false }
+    var isStreamingLoaded: Bool { false }
+
     // Pre-loads the model so the first dictation doesn't pay the disk-load cost.
-    // Same-model warmups are no-ops. Missing weights fail soft rather than
-    // downloading: Settings is the only path that pulls models, so it can show
-    // progress and surface failures inline.
+    // Same-model warmups are no-ops, and one already loading is joined rather
+    // than started twice. Missing weights fail soft rather than downloading:
+    // Settings is the only path that pulls models, so it can show progress and
+    // surface failures inline.
     func warmup() async {
-        if loadedModel == modelIdentifier, pipe != nil { return }
+        if isLoaded { return }
+        if let inFlight = loadTask {
+            await inFlight.value
+            return
+        }
+        let task = Task { [weak self] () -> Void in
+            await self?.loadPipe()
+        }
+        loadTask = task
+        defer { if loadTask == task { loadTask = nil } }
+        await task.value
+    }
+
+    // A Large model's first load can spend minutes compiling for the Neural
+    // Engine, longer than modelLoadTimeout allows.
+    private var loadLimit: Duration {
+        modelIdentifier.contains("large") ? .seconds(300) : modelLoadTimeout
+    }
+
+    func load() async throws {
+        if isLoaded { return }
+        log.notice("Waiting for Whisper \(self.modelIdentifier, privacy: .public) to load.")
+        do {
+            try await withTimeout(loadLimit) { await self.warmup() }
+        } catch is TimedOutError {
+            log.error(
+                "Gave up waiting for Whisper \(self.modelIdentifier, privacy: .public) to load. It keeps loading in the background."
+            )
+            throw EngineError.modelLoadTimedOut
+        }
+        guard isLoaded else { throw EngineError.notLoaded }
+    }
+
+    private func loadPipe() async {
+        let started = Date()
+        log.notice("Whisper \(self.modelIdentifier, privacy: .public) loading.")
         do {
             let folder = try await ModelManager.localFolder(for: modelIdentifier)
             let cfg = WhisperKitConfig(
@@ -44,7 +86,9 @@ final class WhisperEngine: TranscriptionEngine {
             let pipe = try await WhisperKit(cfg)
             self.pipe = pipe
             self.loadedModel = modelIdentifier
-            log.info("Whisper warmed up - model \(self.modelIdentifier, privacy: .public)")
+            log.notice(
+                "Whisper \(self.modelIdentifier, privacy: .public) loaded in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s."
+            )
         } catch {
             log.error(
                 "Warmup failed for \(self.modelIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)"
@@ -53,7 +97,7 @@ final class WhisperEngine: TranscriptionEngine {
     }
 
     func transcribe(samples: [Float]) async throws -> String {
-        if loadedModel != modelIdentifier { await warmup() }
+        try await load()
         guard let pipe = pipe else { throw EngineError.notLoaded }
 
         // Turbo and English-only builds silently ignore the translate task and
@@ -111,6 +155,8 @@ enum EngineError: LocalizedError {
     case streamingNotSupported(engineName: String)
     case modelDirectoryMissing
     case transcriptionTimedOut
+    case modelLoadTimedOut
+    case meetingModelLoadTimedOut(downloading: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -124,6 +170,12 @@ enum EngineError: LocalizedError {
         case .transcriptionTimedOut:
             return
                 "Transcription took too long and was stopped. If this keeps happening, switch to a Whisper model in Settings → Engine, or try a shorter recording."
+        case .modelLoadTimedOut:
+            return "The speech model is still loading. Try again in a minute."
+        case .meetingModelLoadTimedOut(let downloading):
+            return downloading
+                ? "The speech model is still downloading, so this meeting wasn't transcribed."
+                : "The speech model took too long to load, so this meeting wasn't transcribed."
         }
     }
 }

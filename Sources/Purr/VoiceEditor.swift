@@ -146,9 +146,15 @@ final class VoiceEditor {
             return
         }
 
-        hud.show(.transcribing)
-        state = .transcribing
         let engine = engineProvider()
+        // Same HUD step as dictation's while the model loads.
+        let needsLoad = !engine.isLoaded
+        if needsLoad {
+            hud.show(engine.needsDownload ? .downloadingModel : .loadingModel)
+        } else {
+            hud.show(.transcribing)
+        }
+        state = .transcribing
         let inserter = self.inserter
         let hud = self.hud
         let log = self.log
@@ -166,6 +172,10 @@ final class VoiceEditor {
         Task { @MainActor [weak self] in
             defer { self?.state = .idle }
             do {
+                if needsLoad {
+                    try await engine.load()
+                    hud.show(.transcribing)
+                }
                 let raw = try await engine.transcribe(samples: prepared.samples)
                 // The instruction is dictated speech, so run the same deterministic
                 // post-processing (honouring its Settings toggles) before the LLM sees it.
@@ -212,7 +222,12 @@ final class VoiceEditor {
             } catch {
                 log.error(
                     "Voice edit transcription failed: \(error.localizedDescription, privacy: .public)")
-                hud.showMessage("Voice Edit failed. Try again.")
+                // Engine errors, like a model still loading, carry their own message.
+                if let mapped = HUDErrorText.message(for: error) {
+                    hud.showMessage(mapped, autoHideAfter: 4)
+                } else {
+                    hud.showMessage("Voice Edit failed. Try again.")
+                }
             }
         }
     }

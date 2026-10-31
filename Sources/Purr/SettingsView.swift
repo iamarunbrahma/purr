@@ -843,7 +843,7 @@ extension ModelDownloadProgress {
     var label: String {
         switch stage {
         case .downloading:
-            guard let fraction else { return "Downloading…" }
+            guard let fraction else { return "Downloading model" }
             return fraction.formatted(.percent.precision(.fractionLength(0)))
         case .compiling: return "Optimizing…"
         case .verifying: return "Verifying…"

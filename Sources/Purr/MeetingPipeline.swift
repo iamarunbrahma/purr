@@ -39,8 +39,21 @@ final class MeetingPipeline: ObservableObject {
     // remote sound too; decays each mic tick since a silent tap stops
     // delivering buffers.
     private var latestSystemLevel: Float = 0
+    // A stopped meeting's audio until its transcript or the audio itself is
+    // on disk, so a quit meanwhile can still save it.
+    private var untranscribed: (mic: [Float], system: [Float])?
+    // Writes a meeting's audio, with or without its transcript. Serial, so a
+    // quit can wait out a write already running.
+    private let audioQueue = DispatchQueue(label: "com.arunbrahma.purr.meeting-audio")
+    private var savingUntranscribed = false
+    private var summarizing = false
 
     private static let systemLevelDecay: Float = 0.8
+    // How long a meeting waits for its model to load or download: far longer
+    // than dictation, since giving up costs the meeting its transcript, but a
+    // stuck load or a crawling download can't hold the meeting, and the
+    // dictation it pauses, forever.
+    private static let modelLoadLimit: Duration = .seconds(600)
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "meeting")
 
@@ -56,6 +69,39 @@ final class MeetingPipeline: ObservableObject {
 
     func downloadDiarizer() async throws {
         try await diarizer.downloadAndWarmup()
+    }
+
+    // Where a meeting is, for the quit alert: Quit Anyway saves the audio of
+    // one recording or transcribing, and skips the summary of one whose
+    // transcript is saved.
+    enum QuitStage {
+        case recording, transcribing, summarizing
+    }
+
+    var quitStage: QuitStage? {
+        if case .recording = state { return .recording }
+        // From stop until the transcript or the audio is on disk.
+        if untranscribed != nil || savingUntranscribed { return .transcribing }
+        return summarizing ? .summarizing : nil
+    }
+
+    // Every quit ends here. Quit Anyway keeps the audio of a meeting still
+    // recording or waiting on its transcript, as a failure does, and audio
+    // still being written is waited out. Blocks until it's on disk, since the
+    // app exits right after.
+    func saveAudioBeforeQuit() {
+        if case .recording = state {
+            let mic = recorder.stop()
+            let system = stopSystemCapture(micStartHostTime: recorder.captureStartHostTime).samples
+            // Under 2 s is a stray tap, as in stop().
+            if mic.count >= 16_000 * 2 { untranscribed = (mic, system) }
+        }
+        let meeting = untranscribed
+        untranscribed = nil
+        let folder = MeetingDocument.meetingsDirectory()
+        audioQueue.sync {
+            if let meeting { _ = writeUntranscribedAudio(meeting, folder: folder) }
+        }
     }
 
     // .recording excluded - a press then is the *stop* gesture, not busy.
@@ -167,9 +213,16 @@ final class MeetingPipeline: ObservableObject {
             return
         }
         state = .processing
-        hud.show(.transcribing)
+        untranscribed = (samples, systemSamples)
+        // Waiting on the model is its own HUD step, as for dictation.
+        let loadStep = meetingModelLoadStep
+        hud.show(loadStep ?? .transcribing)
 
         do {
+            if let loadStep {
+                try await loadMeetingModel(downloading: loadStep == .downloadingModel)
+                hud.show(.transcribing)
+            }
             let processingStarted = Date()
             log.info(
                 "Meeting processing: \(samples.count, privacy: .public) mic samples + \(systemSamples.count, privacy: .public) system samples (~\(String(format: "%.2f", Double(samples.count) / 16_000.0), privacy: .public)s)"
@@ -239,23 +292,25 @@ final class MeetingPipeline: ObservableObject {
                 audioRemoteSamples = systemSamples
             }
             let url = try MeetingDocument.write(document)
+            untranscribed = nil
             log.info("Meeting saved → \(url.path, privacy: .public)")
 
             // A failure here must not sink the meeting - the transcript already
-            // saved - so it's logged rather than thrown. Off the main actor,
-            // same as EchoCanceller, since encoding is pure CPU work.
+            // saved - so it's logged rather than thrown. On the audio queue,
+            // since encoding is pure CPU work: the meeting moves on meanwhile,
+            // and a quit waits for the file rather than cutting it short.
             if SettingsStore.shared.saveMeetingAudio {
-                do {
-                    let audioURL = try await Task.detached {
-                        try MeetingDocument.writeAudio(
+                audioQueue.async { [log] in
+                    do {
+                        let audioURL = try MeetingDocument.writeAudio(
                             localSamples: audioLocalSamples, remoteSamples: audioRemoteSamples,
                             alongside: url)
-                    }.value
-                    log.info("Meeting audio saved → \(audioURL.path, privacy: .public)")
-                } catch {
-                    log.error(
-                        "Meeting audio save failed: \(error.localizedDescription, privacy: .public)"
-                    )
+                        log.info("Meeting audio saved → \(audioURL.path, privacy: .public)")
+                    } catch {
+                        log.error(
+                            "Meeting audio save failed: \(error.localizedDescription, privacy: .public)"
+                        )
+                    }
                 }
             }
 
@@ -276,15 +331,20 @@ final class MeetingPipeline: ObservableObject {
             state = .idle
         } catch {
             log.error("Meeting pipeline failed: \(error.localizedDescription, privacy: .public)")
-            // Nothing is on disk until a transcript is, so this is the only
-            // copy of the meeting. Saved while still .processing, so a press
-            // can't start the next meeting meanwhile.
-            let audioURL = await saveAudioOfUntranscribedMeeting(mic: samples, system: systemSamples)
+            // Saved while still .processing, so a press can't start the next
+            // meeting meanwhile.
+            let audioURL = await saveAudioOfUntranscribedMeeting()
             state = .error(error.localizedDescription)
             let mapped = HUDErrorText.message(for: error)
             if let audioURL {
-                hud.showMessage(
-                    (mapped ?? "Couldn't transcribe this meeting.") + " Its audio was saved.", autoHideAfter: 4)
+                if case EngineError.meetingModelLoadTimedOut(downloading: true) = error {
+                    // Not an error to act on: the download carries on, and
+                    // Finder shows the saved audio.
+                    hud.showMessage("Still downloading model", icon: .downloadingModel, autoHideAfter: 4)
+                } else {
+                    hud.showMessage(
+                        (mapped ?? "Couldn't transcribe this meeting.") + " Its audio was saved.", autoHideAfter: 4)
+                }
                 NSWorkspace.shared.activateFileViewerSelecting([audioURL])
             } else {
                 hud.showMessage(mapped ?? "Meeting processing failed. Try again.", autoHideAfter: 4)
@@ -294,18 +354,30 @@ final class MeetingPipeline: ObservableObject {
         }
     }
 
-    // Keep audio's promise ("to check or re-transcribe later") matters most
-    // when the transcript couldn't be made, e.g. a model that downloads at
-    // stop time on a Mac that's offline. The mic track is the raw recording:
-    // the echo-cancelled copy is local to the pass that failed.
-    private func saveAudioOfUntranscribedMeeting(mic: [Float], system: [Float]) async -> URL? {
-        guard SettingsStore.shared.saveMeetingAudio else { return nil }
+    // Nothing is on disk until a transcript is, so a meeting without one keeps
+    // its audio, with Keep audio on or off: it's the only copy. The mic track
+    // is the raw recording: the echo-cancelled copy is local to the pass that
+    // failed.
+    private func saveAudioOfUntranscribedMeeting() async -> URL? {
+        guard let meeting = untranscribed else { return nil }
+        untranscribed = nil
+        savingUntranscribed = true
+        defer { savingUntranscribed = false }
         let folder = MeetingDocument.meetingsDirectory()
+        return await withCheckedContinuation { continuation in
+            audioQueue.async {
+                continuation.resume(returning: self.writeUntranscribedAudio(meeting, folder: folder))
+            }
+        }
+    }
+
+    // Off the main actor, since encoding is pure CPU work.
+    private nonisolated func writeUntranscribedAudio(
+        _ meeting: (mic: [Float], system: [Float]), folder: URL
+    ) -> URL? {
         do {
-            let url = try await Task.detached {
-                try MeetingDocument.writeAudio(
-                    localSamples: mic, remoteSamples: system, recordedAt: Date(), folder: folder)
-            }.value
+            let url = try MeetingDocument.writeAudio(
+                localSamples: meeting.mic, remoteSamples: meeting.system, recordedAt: Date(), folder: folder)
             log.info("Meeting audio saved without a transcript → \(url.path, privacy: .public)")
             return url
         } catch {
@@ -334,6 +406,8 @@ final class MeetingPipeline: ObservableObject {
             return .skipped
         }
         hud.show(.summarizing)
+        summarizing = true
+        defer { summarizing = false }
         let started = Date()
         do {
             let url = try await summarizer.summarize(transcriptURL: transcriptURL)
@@ -381,6 +455,39 @@ final class MeetingPipeline: ObservableObject {
             return try await parakeet.transcribeDetailed(samples: samples)
         }
         return try await parakeet.transcribeMeeting(samples: samples, language: language)
+    }
+
+    // The HUD step for loading the model transcribeMeetingAudio routes to, or
+    // nil when it's loaded.
+    private var meetingModelLoadStep: RecordingHUD.Mode? {
+        if ParakeetLanguage.named(SettingsStore.shared.meetingLanguage).fluidAudioLanguage == nil {
+            if parakeet.isLoaded { return nil }
+            return parakeet.needsDownload ? .downloadingModel : .loadingModel
+        }
+        if parakeet.isMeetingModelLoaded { return nil }
+        return ParakeetEngine.meetingModelIsInstalled() ? .loadingModel : .downloadingModel
+    }
+
+    // Loads that model, downloading it first if needed, within modelLoadLimit.
+    // Past it this throws, and the load carries on in the background for the
+    // next meeting.
+    private func loadMeetingModel(downloading: Bool) async throws {
+        let english = ParakeetLanguage.named(SettingsStore.shared.meetingLanguage).fluidAudioLanguage == nil
+        let load: @Sendable () async throws -> Void = { [parakeet] in
+            if english {
+                try await parakeet.downloadAndLoadBatchManager()
+            } else {
+                try await parakeet.downloadAndLoadMeetingManager()
+            }
+        }
+        do {
+            try await withTimeout(Self.modelLoadLimit, operation: load)
+        } catch is TimedOutError {
+            log.error(
+                "Gave up waiting for \(self.meetingModelName, privacy: .public) to \(downloading ? "download" : "load", privacy: .public). It carries on in the background."
+            )
+            throw EngineError.meetingModelLoadTimedOut(downloading: downloading)
+        }
     }
 
     // The model transcribeMeetingAudio routes to, for the document header.
