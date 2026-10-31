@@ -73,7 +73,7 @@ final class LlamaSession {
         // Offload every block to Metal: Gemma 4 E2B at Q4_0 is ~3.3 GB, which
         // fits the unified-memory GPU partition on every Mac we support (8 GB+).
         modelParams.n_gpu_layers = 999
-        modelParams.use_mmap = true
+        modelParams.load_mode = LLAMA_LOAD_MODE_MMAP
 
         guard let loaded = llama_model_load_from_file(modelPath, modelParams) else {
             throw LlamaError.modelLoadFailed(path: modelPath)
@@ -142,6 +142,7 @@ final class LlamaSession {
         llama_sampler_chain_add(
             sampler,
             llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab),
                 Int32(parameters.repetitionContextSize),
                 parameters.repetitionPenalty,
                 0.0,

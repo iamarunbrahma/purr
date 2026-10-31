@@ -30,12 +30,12 @@ let package = Package(
         // llama.cpp Apple XCFramework - runs Gemma 4 E2B for meeting summaries
         // and Voice Edit. Pinned to a specific upstream tag so the SHA256 is
         // stable; bump by hand when picking up a new release (the framework
-        // ships ~200 MB zipped because it bundles every Apple platform slice,
-        // but only the macos-arm64 slice ends up in the final .app, ~30 MB).
+        // ships ~67 MB zipped with its iOS and macOS slices, but only the
+        // macos-arm64 slice ends up in the final .app).
         .binaryTarget(
             name: "llama",
-            url: "https://github.com/ggml-org/llama.cpp/releases/download/b9106/llama-b9106-xcframework.zip",
-            checksum: "a6f2aa6b00d2403385a56ac6a0746ffecaf8edc8852c4dc7c821d6acc55945be"
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b12003/llama-b12003-xcframework.zip",
+            checksum: "59afc160e12658d1061f8e1a97f686b4a985b6b6ae28583713c71c5895493e64"
         ),
         // SpeexDSP echo canceller, vendored from xiph/speexdsp (BSD-3) and
         // compiled from source - see Sources/CEcho/SPEEXDSP-COPYING. Powers
