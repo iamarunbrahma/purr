@@ -4,7 +4,7 @@ import Foundation
 // Meeting language picker options. `code` matches FluidAudio's `Language`
 // rawValue exactly (round-trips via `fluidAudioLanguage`, no translation
 // table). English is the sentinel (empty code): it keeps meetings on the
-// always-installed v2 model; any other choice routes through v3, with the
+// always-installed v2 model; any other choice routes through Ultra, with the
 // language passed as its script-aware token filter hint.
 struct ParakeetLanguage: LanguageOption {
     let code: String
@@ -71,7 +71,7 @@ struct ParakeetLanguage: LanguageOption {
     }
 
     // nil for the English sentinel - transcribeMeeting() then knows to skip
-    // v3 entirely and stay on the shared v2 manager.
+    // Ultra entirely and stay on the shared v2 manager.
     var fluidAudioLanguage: Language? {
         Language(rawValue: code)
     }

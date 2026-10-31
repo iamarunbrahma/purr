@@ -145,7 +145,7 @@ final class SettingsStore: ObservableObject {
     }
 
     // Empty string = English (Parakeet v2); otherwise a ParakeetLanguage code
-    // that routes meetings through the multilingual v3 model instead.
+    // that routes meetings through the multilingual Ultra model instead.
     @Published var meetingLanguage: String {
         didSet { defaults.set(meetingLanguage, forKey: Keys.meetingLanguage) }
     }

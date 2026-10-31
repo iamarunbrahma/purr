@@ -463,7 +463,7 @@ final class MeetingPipeline: ObservableObject {
         }
     }
 
-    // Routes to Parakeet v2 (English default) or v3 (multilingual) per
+    // Routes to Parakeet v2 (English default) or Ultra (multilingual) per
     // Settings' meeting language - dictation and voice-edit never see this.
     private func transcribeMeetingAudio(samples: [Float]) async throws -> ASRResult {
         guard let language = ParakeetLanguage.named(SettingsStore.shared.meetingLanguage).fluidAudioLanguage
@@ -509,7 +509,7 @@ final class MeetingPipeline: ObservableObject {
     // The model transcribeMeetingAudio routes to, for the document header.
     private var meetingModelName: String {
         ParakeetLanguage.named(SettingsStore.shared.meetingLanguage).fluidAudioLanguage == nil
-            ? "Parakeet TDT v2" : "Parakeet TDT v3"
+            ? "Parakeet TDT v2" : "Parakeet Ultra"
     }
 
     // Surfaces counts/confidence for diagnosing "no speech detected" without

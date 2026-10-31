@@ -71,7 +71,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     var id: String {
         switch self {
         case .parakeet: return "parakeet-v2"
-        case .parakeetMultilingual: return "parakeet-v3"
+        case .parakeetMultilingual: return "parakeet-ultra"
         case .smartTyping: return "parakeet-eou"
         case .diarizer: return "diarizer"
         case .gemma: return "gemma"
@@ -82,7 +82,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .parakeet: return "Parakeet TDT v2"
-        case .parakeetMultilingual: return "Parakeet TDT v3"
+        case .parakeetMultilingual: return "Parakeet Ultra"
         case .smartTyping: return "Parakeet EOU 120M"
         case .diarizer: return "Speaker Diarization"
         case .gemma: return LLMModelManager.defaultModelLabel
@@ -107,7 +107,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     var downloadBytes: Int64 {
         switch self {
         case .parakeet: return 464_413_250
-        case .parakeetMultilingual: return 483_256_769
+        case .parakeetMultilingual: return 632_314_500
         case .smartTyping: return 224_238_533
         case .diarizer: return 21_776_918
         case .gemma: return LLMModelManager.defaultModelExpectedSize

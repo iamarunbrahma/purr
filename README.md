@@ -133,7 +133,8 @@ Purr is MIT licensed. Copyright (c) 2026 Arun Brahma. See [LICENSE](LICENSE).
 
 Models download on first use, are never bundled, and keep their own licenses:
 
-- **Parakeet TDT v2 and v3** (NVIDIA, via FluidAudio): CC-BY-4.0
+- **Parakeet TDT v2** (NVIDIA, via FluidAudio): CC-BY-4.0
+- **Parakeet Ultra** (moondream's post-training of NVIDIA's Parakeet TDT v3, via FluidAudio): CC-BY-4.0
 - **Whisper** (OpenAI, via WhisperKit): MIT
 - **Gemma 4 E2B** (Google): [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 

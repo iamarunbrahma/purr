@@ -8,7 +8,7 @@ protocol LanguageOption: Identifiable, Hashable where ID == String {
 }
 
 // Modal sheet for picking a language from a long list (Whisper's 100 translation
-// source languages, Parakeet v3's meeting languages). A compact settings row can't
+// source languages, Parakeet Ultra's meeting languages). A compact settings row can't
 // host a list that size, so a dedicated picker owns the search interaction - the
 // same shape macOS System Settings uses for Language & Region and Input Sources.
 struct LanguagePickerSheet<Option: LanguageOption>: View {

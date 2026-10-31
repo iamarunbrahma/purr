@@ -11,20 +11,20 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
-        // FluidAudio - Parakeet TDT v2 (English) and v3 (other meeting
-        // languages), Parakeet EOU streaming for Smart Typing, and the meeting
-        // speaker diarizer.
+        // FluidAudio - Parakeet TDT v2 (English) and Parakeet Ultra (other
+        // meeting languages), Parakeet EOU streaming for Smart Typing, and the
+        // meeting speaker diarizer.
         //
         // Pinned exactly: FluidAudio has broken this build from inside a
         // version range before. 0.15.5 removed the `DownloadUtils` namespace,
         // and tag v0.15.8 is the "v0.16.0" release. Bump by hand after running
         // the transcripts through both versions.
         //
-        // `traits: []` leaves out the NeMo text normalizer, a ~9 MB Rust
-        // library FluidAudio links by default for its TTS and inverse text
-        // normalization, neither of which Purr uses.
+        // The Diarizer trait alone keeps the speaker diarizer and leaves out
+        // TTS and the NeMo text normalizer, a ~9 MB Rust library, neither of
+        // which Purr uses.
         .package(
-            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.7", traits: []),
+            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.0", traits: ["Diarizer"]),
     ],
     targets: [
         // llama.cpp Apple XCFramework - runs Gemma 4 E2B for meeting summaries

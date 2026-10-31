@@ -332,7 +332,7 @@ final class AppCoordinator: ObservableObject {
         } catch {
             return .failed(error)
         }
-        log.info("Parakeet TDT v3 (meeting) deleted on user request.")
+        log.info("Parakeet Ultra (meeting) deleted on user request.")
         return .ok
     }
 

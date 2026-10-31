@@ -413,7 +413,7 @@ private struct MeetingsPane: View {
                 LanguageRow(title: "Language", value: ParakeetLanguage.named(settings.meetingLanguage).name) {
                     pickingLanguage = true
                 }
-                .help("English uses Parakeet v2. Other languages use the multilingual Parakeet v3.")
+                .help("English uses Parakeet v2. Other languages use the multilingual Parakeet Ultra.")
                 if !settings.meetingLanguage.isEmpty, models[.parakeetMultilingual].needsAttention {
                     ModelRow(kind: .parakeetMultilingual, models: models)
                         .help("Needed for this language. Downloads on your next meeting if you skip it.")
