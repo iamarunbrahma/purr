@@ -54,10 +54,11 @@ endif
 # exported below; make 3.81's $(shell) wouldn't, and could ask another Swift.
 BIN_DIR = $$(swift build -c $(CONFIG) --arch arm64 --show-bin-path)
 # llama.cpp is shipped as an XCFramework binary target. SwiftPM stages
-# the macOS-arm64 slice next to the built executable; we copy that into
-# the bundle's Frameworks/ and add the rpath the executable needs to
-# find it at runtime (the linker's default @loader_path works when the
-# binary sits beside the framework, but the .app layout splits them).
+# its macOS framework (arm64 and x86_64) next to the built executable; we
+# copy that into the bundle's Frameworks/, keep only arm64, and add the
+# rpath the executable needs to find it at runtime (the linker's default
+# @loader_path works when the binary sits beside the framework, but the
+# .app layout splits them).
 LLAMA_FRAMEWORK_SRC = $(BIN_DIR)/llama.framework
 
 # The @Generable / @Guide macros (FoundationModels) need Xcode's compiler
@@ -89,6 +90,8 @@ app:
 	@# reproducible across builds.
 	@rm -rf $(FRAMEWORKS_DIR)/llama.framework
 	@cp -Rp "$(LLAMA_FRAMEWORK_SRC)" $(FRAMEWORKS_DIR)/llama.framework
+	@# Purr is built for arm64 only, so the x86_64 half is dead weight.
+	@lipo $(FRAMEWORKS_DIR)/llama.framework/Versions/A/llama -thin arm64 -output $(FRAMEWORKS_DIR)/llama.framework/Versions/A/llama
 	@# Add @executable_path/../Frameworks to the binary's rpath. Quiet if
 	@# already present (re-runs of `make app` would otherwise fail).
 	@install_name_tool -add_rpath @executable_path/../Frameworks $(MACOS_DIR)/$(APP_NAME) 2>/dev/null || true
