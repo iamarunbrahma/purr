@@ -97,9 +97,10 @@ final class VoiceEditor {
             // "Warming up…" until the mic delivers a buffer; startLevelTask() flips it.
             hud.show(.warmingUp)
             startLevelTask()
-            // Warm the LLM while the user speaks so a cold model load overlaps the
-            // recording window instead of stalling the edit.
-            EditInterpreter.warmUp()
+            // Warm the LLM while the user speaks so a cold model load and the
+            // prompt up to the instruction overlap the recording window instead
+            // of stalling the edit.
+            EditInterpreter.warmUp(selection: selection)
         } catch {
             isActive = false
             capturedSelection = nil

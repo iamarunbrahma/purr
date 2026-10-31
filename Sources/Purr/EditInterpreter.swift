@@ -78,19 +78,29 @@ enum EditInterpreter {
         SettingsStore.shared.voiceEditBackend == .llamaCpp && LLMModelManager.isInstalled()
     }
 
-    // Called the moment the voice-edit hotkey is pressed so a cold Gemma load
-    // overlaps with the user speaking instead of stalling the edit.
-    static func warmUp() {
+    #if canImport(FoundationModels)
+    // The Apple session warmUp(selection:) prewarmed, kept for that selection's
+    // edit. AnyObject because LanguageModelSession needs macOS 26.
+    private static var prewarmed: (session: AnyObject, selection: String)?
+    #endif
+
+    // Called the moment the voice-edit hotkey is pressed. Everything in the
+    // prompt before the instruction is known by then, so the model reads it
+    // while the user speaks, and a cold Gemma load overlaps the recording too.
+    static func warmUp(selection: String) {
         if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
-                editSession().prewarm()
+                let session = editSession()
+                session.prewarm(promptPrefix: Prompt(userTurnPrefix(selection: selection)))
+                prewarmed = (session, selection)
             }
             #endif
             return
         }
         if LLMModelManager.isInstalled() {
-            Task { await LlamaRuntime.shared.warmUp() }
+            let prefix = gemmaPromptPrefix(selection: selection)
+            Task { await LlamaRuntime.shared.warmUp(prefix: prefix) }
         }
     }
 
@@ -143,6 +153,14 @@ enum EditInterpreter {
             instructions: systemPrompt)
     }
 
+    // Each prewarmed session serves one edit at most.
+    @available(macOS 26.0, *)
+    private static func takePrewarmedSession(for selection: String) -> LanguageModelSession? {
+        defer { prewarmed = nil }
+        guard prewarmed?.selection == selection else { return nil }
+        return prewarmed?.session as? LanguageModelSession
+    }
+
     @available(macOS 26.0, *)
     private static func interpretWithAppleFM(
         instruction: String, selection: String
@@ -150,13 +168,9 @@ enum EditInterpreter {
         -> VoiceEditPlan
     {
         // A fresh session per edit - reusing one would accumulate prior turns
-        // against the 4096-token context budget.
-        let session = editSession()
-        let prompt = """
-            \(formatSpec)
-
-            \(userPrompt(instruction: instruction, selection: selection))
-            """
+        // against the 4096-token context budget. A prewarmed one is still fresh.
+        let session = takePrewarmedSession(for: selection) ?? editSession()
+        let prompt = userTurn(instruction: instruction, selection: selection)
         let raw: String
         do {
             let response = try await session.respond(
@@ -519,8 +533,12 @@ enum EditInterpreter {
         @@END@@
         """
 
-    private static func userPrompt(instruction: String, selection: String) -> String {
+    // The user turn, the same for both backends. The instruction comes last,
+    // so warmUp(selection:) can have the model read everything before it.
+    private static func userTurnPrefix(selection: String) -> String {
         """
+        \(formatSpec)
+
         Selected passage:
         \"\"\"
         \(selection)
@@ -528,26 +546,26 @@ enum EditInterpreter {
 
         Spoken instruction:
         \"\"\"
-        \(instruction)
-        \"\"\"
+
         """
+    }
+
+    private static func userTurn(instruction: String, selection: String) -> String {
+        userTurnPrefix(selection: selection) + "\(instruction)\n\"\"\""
     }
 
     // Gemma 4's chat template: the role goes in the system turn, format and
     // request in the user turn. The BOS token is added by the tokenizer and
     // <turn|> closes each turn. No <|think|> in the system turn, so the model
     // answers without a reasoning block.
+    private static let gemmaTurnsBeforeUser = "<|turn>system\n\(systemPrompt)<turn|>\n<|turn>user\n"
+
+    private static func gemmaPromptPrefix(selection: String) -> String {
+        gemmaTurnsBeforeUser + userTurnPrefix(selection: selection)
+    }
+
     private static func gemmaPrompt(instruction: String, selection: String) -> String {
-        """
-        <|turn>system
-        \(systemPrompt)<turn|>
-        <|turn>user
-        \(formatSpec)
-
-        \(userPrompt(instruction: instruction, selection: selection))<turn|>
-        <|turn>model
-
-        """
+        gemmaTurnsBeforeUser + userTurn(instruction: instruction, selection: selection) + "<turn|>\n<|turn>model\n"
     }
 }
 

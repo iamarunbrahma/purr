@@ -55,6 +55,9 @@ final class LlamaSession {
     private let vocab: OpaquePointer
     private let context: OpaquePointer
     private let contextSize: Int
+    // The tokens whose KV cells are in the context, in position order: the
+    // last prompt plus what was generated after it.
+    private var cachedTokens: [llama_token] = []
 
     init(modelPath: String) throws {
         // Must be set before ggml creates the Metal device during the model load
@@ -88,6 +91,9 @@ final class LlamaSession {
         // English) plus a 4096-token summary. The KV cache for it is ~216 MB.
         ctxParams.n_ctx = 12288
         ctxParams.n_batch = 512
+        // Gemma's sliding-window layers keep every position, not just the last
+        // window, so a prompt can reuse the cells of the previous one's prefix.
+        ctxParams.swa_full = true
         // Leave two cores for audio and UI. The cap of 8 mirrors the upstream
         // Swift example - more threads hurt than help on M-series.
         let threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
@@ -114,25 +120,8 @@ final class LlamaSession {
     // Honours Task cancellation between sampling iterations, so the watchdog in
     // MeetingSummarizer can abort a stuck run by cancelling the surrounding Task.
     func generate(prompt: String, parameters: Parameters = .init()) throws -> String {
-        // 1. Tokenize. The first llama_tokenize call passes a nil buffer to
-        //    learn the token count (returned negative); the second fills it.
-        let promptBytes = prompt.utf8.count
-        var probe: [llama_token] = []
-        let probedNeg = prompt.withCString { cStr in
-            llama_tokenize(vocab, cStr, Int32(promptBytes), &probe, 0, true, true)
-        }
-        let needed = Int(-probedNeg)
-        guard needed > 0 else { throw LlamaError.tokenizeFailed }
-
-        var tokens = [llama_token](repeating: 0, count: needed)
-        let actual = prompt.withCString { cStr in
-            tokens.withUnsafeMutableBufferPointer { buf in
-                llama_tokenize(
-                    vocab, cStr, Int32(promptBytes), buf.baseAddress, Int32(buf.count), true, true)
-            }
-        }
-        guard actual > 0 else { throw LlamaError.tokenizeFailed }
-        tokens = Array(tokens.prefix(Int(actual)))
+        // 1. Tokenize.
+        let tokens = try tokenize(prompt)
 
         // Past the window, llama_decode fails with no free KV slot - in the
         // prompt, or worse, partway through the response. Refuse up front with
@@ -165,27 +154,7 @@ final class LlamaSession {
         // 3. Decode the prompt. n_seq_max=1 - only ever one sequence at a time.
         var batch = llama_batch_init(Int32(parameters.nBatch), 0, 1)
         defer { llama_batch_free(batch) }
-
-        // Drop KV-cache state left by a previous generate() on this reused
-        // session: re-decoding overlapping positions without a clear stacks
-        // duplicate cells, making the model attend to stale context.
-        llama_memory_clear(llama_get_memory(context), true)
-
-        // A single llama_batch holds at most n_batch tokens, so a longer prompt
-        // has to be decoded in chunks. Only the very last token gets the logits
-        // bit, so the model yields a next-token distribution.
-        let chunkSize = Int(parameters.nBatch)
-        var offset = 0
-        while offset < tokens.count {
-            let end = min(offset + chunkSize, tokens.count)
-            llamaBatchClear(&batch)
-            for i in offset..<end {
-                llamaBatchAdd(&batch, tokens[i], Int32(i), [0], i == tokens.count - 1)
-            }
-            let promptRC = llama_decode(context, batch)
-            if promptRC != 0 { throw LlamaError.decodeFailed(code: promptRC) }
-            offset = end
-        }
+        try decodePrompt(tokens, batch: &batch, chunkSize: Int(parameters.nBatch))
 
         // 4. Sample a token, keep its bytes, feed it back as a single-token
         //    batch. Stops on EOG (Gemma 4 emits <turn|>), the cap, or
@@ -210,9 +179,83 @@ final class LlamaSession {
 
             let stepRC = llama_decode(context, batch)
             if stepRC != 0 { throw LlamaError.decodeFailed(code: stepRC) }
+            cachedTokens.append(newToken)
         }
 
         return String(decoding: output, as: UTF8.self)
+    }
+
+    // Decodes the start of a prompt ahead of the generate() call that will
+    // send all of it, such as a voice edit's prompt up to the instruction.
+    func prefill(prompt: String) throws {
+        let tokens = try tokenize(prompt)
+        guard tokens.count <= contextSize else {
+            throw LlamaError.promptTooLong(tokens: tokens.count, budget: contextSize)
+        }
+        let chunkSize = Parameters().nBatch
+        var batch = llama_batch_init(Int32(chunkSize), 0, 1)
+        defer { llama_batch_free(batch) }
+        try decodePrompt(tokens, batch: &batch, chunkSize: Int(chunkSize))
+    }
+
+    // The first llama_tokenize call passes a nil buffer to learn the token
+    // count (returned negative); the second fills it.
+    private func tokenize(_ prompt: String) throws -> [llama_token] {
+        let promptBytes = prompt.utf8.count
+        var probe: [llama_token] = []
+        let probedNeg = prompt.withCString { cStr in
+            llama_tokenize(vocab, cStr, Int32(promptBytes), &probe, 0, true, true)
+        }
+        let needed = Int(-probedNeg)
+        guard needed > 0 else { throw LlamaError.tokenizeFailed }
+
+        var tokens = [llama_token](repeating: 0, count: needed)
+        let actual = prompt.withCString { cStr in
+            tokens.withUnsafeMutableBufferPointer { buf in
+                llama_tokenize(
+                    vocab, cStr, Int32(promptBytes), buf.baseAddress, Int32(buf.count), true, true)
+            }
+        }
+        guard actual > 0 else { throw LlamaError.tokenizeFailed }
+        return Array(tokens.prefix(Int(actual)))
+    }
+
+    // Keeps the cells of the longest prefix `tokens` share with the previous
+    // call's, such as a voice edit's prompt prefilled at the hotkey press, and
+    // decodes the rest. The last token is always decoded: sampling reads its
+    // logits.
+    private func decodePrompt(_ tokens: [llama_token], batch: inout llama_batch, chunkSize: Int) throws {
+        let memory = llama_get_memory(context)
+        var reused = 0
+        while reused < min(cachedTokens.count, tokens.count - 1), cachedTokens[reused] == tokens[reused] {
+            reused += 1
+        }
+        // Cells past the shared prefix must go first: decoding over their
+        // positions stacks duplicate cells, making the model attend to stale
+        // context. seq_rm returns false if the cache can't drop a partial
+        // range; then everything goes.
+        if reused == 0 || !llama_memory_seq_rm(memory, 0, Int32(reused), -1) {
+            llama_memory_clear(memory, true)
+            reused = 0
+        }
+        cachedTokens = Array(tokens.prefix(reused))
+        log.info("Llama prompt: \(tokens.count, privacy: .public) tokens, \(reused, privacy: .public) reused")
+
+        // A single llama_batch holds at most n_batch tokens, so a longer prompt
+        // has to be decoded in chunks. Only the very last token gets the logits
+        // bit, so the model yields a next-token distribution.
+        var offset = reused
+        while offset < tokens.count {
+            let end = min(offset + chunkSize, tokens.count)
+            llamaBatchClear(&batch)
+            for i in offset..<end {
+                llamaBatchAdd(&batch, tokens[i], Int32(i), [0], i == tokens.count - 1)
+            }
+            let promptRC = llama_decode(context, batch)
+            if promptRC != 0 { throw LlamaError.decodeFailed(code: promptRC) }
+            cachedTokens.append(contentsOf: tokens[offset..<end])
+            offset = end
+        }
     }
 
     // token_to_piece may need more than 16 bytes for a long piece; a negative
