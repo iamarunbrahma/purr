@@ -196,8 +196,11 @@ enum EditInterpreter {
     {
         let prompt = gemmaPrompt(instruction: instruction, selection: selection)
         // 1400 output tokens covers a holistic rewrite of a max-size selection;
-        // targeted edits stop early at end-of-turn.
-        let parameters = LlamaSession.Parameters(maxTokens: 1400, temperature: 0.2)
+        // targeted edits stop early at end-of-turn. 1.0 turns the repetition
+        // penalty off. Replies repeat their markers and copy words into the
+        // replacement, and the penalty made Gemma end replies before @@END@@
+        // and capitalize copied words.
+        let parameters = LlamaSession.Parameters(maxTokens: 1400, temperature: 0.2, repetitionPenalty: 1.0)
 
         let work = Task { try await LlamaRuntime.shared.generate(prompt: prompt, parameters: parameters) }
         let watchdog = Task<Void, Error> {
@@ -412,18 +415,23 @@ enum EditInterpreter {
         while let findMarker = text.range(of: "@@FIND@@", range: cursor..<text.endIndex) {
             guard
                 let replaceMarker = text.range(
-                    of: "@@REPLACE@@", range: findMarker.upperBound..<text.endIndex),
-                let endMarker = text.range(
-                    of: "@@END@@", range: replaceMarker.upperBound..<text.endIndex)
+                    of: "@@REPLACE@@", range: findMarker.upperBound..<text.endIndex)
             else { break }
+            // Gemma sometimes leaves a block's @@END@@ out, so a block also
+            // ends at the next @@FIND@@ or at the end of the reply.
+            let nextFind =
+                text.range(of: "@@FIND@@", range: replaceMarker.upperBound..<text.endIndex)?.lowerBound
+                ?? text.endIndex
+            let blockEnd =
+                text.range(of: "@@END@@", range: replaceMarker.upperBound..<nextFind) ?? nextFind..<nextFind
             let find = String(text[findMarker.upperBound..<replaceMarker.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let replace = String(text[replaceMarker.upperBound..<endMarker.lowerBound])
+            let replace = String(text[replaceMarker.upperBound..<blockEnd.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !find.isEmpty {
                 spans.append(VoiceEditPlan.Span(find: find, replace: replace))
             }
-            cursor = endMarker.upperBound
+            cursor = blockEnd.upperBound
         }
         return spans.isEmpty ? nil : VoiceEditPlan(scope: .targeted, edits: spans, rewrite: "")
     }
