@@ -108,7 +108,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         switch self {
         case .parakeet: return 464_413_250
         case .parakeetMultilingual: return 483_256_769
-        case .smartTyping: return 447_774_022
+        case .smartTyping: return 224_238_533
         case .diarizer: return 21_776_918
         case .gemma: return LLMModelManager.defaultModelExpectedSize
         case .whisper(let name): return Int64(Self.whisperChoice(name)?.sizeMB ?? 0) * 1_048_576
@@ -159,6 +159,8 @@ final class ModelStore: ObservableObject {
         // the download size until then.
         var bytesOnDisk: Int64?
         var download: ModelDownloadProgress?
+        // A Whisper model's first Neural Engine compile, after its download.
+        var isCompiling = false
         var failure: Failure?
     }
 
@@ -189,6 +191,13 @@ final class ModelStore: ObservableObject {
             .store(in: &observers)
         coordinator.$meetingLanguageModelProgress
             .sink { [weak self] in self?.mirror(.parakeetMultilingual, $0) }
+            .store(in: &observers)
+        coordinator.$compilingWhisperModel
+            .sink { [weak self] compiling in
+                for choice in ModelManager.curatedModels {
+                    self?.update(.whisper(choice.id)) { $0.isCompiling = choice.id == compiling }
+                }
+            }
             .store(in: &observers)
         refresh()
     }
@@ -273,7 +282,15 @@ final class ModelStore: ObservableObject {
             try Self.check(await coordinator.downloadEOUModel())
         case .diarizer:
             // FluidAudio's diarizer takes no progress handler, so its ~22 MB
-            // shows as an indeterminate bar.
+            // shows as an indeterminate bar, then as compiling once every file
+            // is on disk (FluidAudio moves each one into place whole).
+            let compileWatch = Task { [weak self] in
+                while !Diarizer.isInstalled() {
+                    try await Task.sleep(for: .milliseconds(500))
+                }
+                self?.advance(kind, to: ModelDownloadProgress(stage: .compiling, fraction: nil))
+            }
+            defer { compileWatch.cancel() }
             try Self.check(await coordinator.downloadDiarizationModel())
         case .gemma:
             // Doesn't pre-load the LlamaSession - that happens lazily on first
@@ -295,7 +312,8 @@ final class ModelStore: ObservableObject {
                 }
             }
             // Picking a model warms the engine before its files exist, which
-            // fails quietly. Load it now, so the first dictation doesn't wait.
+            // fails quietly. Load it now, so its first compile runs here, with
+            // its row showing it, rather than when the user first dictates.
             let settings = SettingsStore.shared
             if settings.engine == .whisper, settings.modelName == name {
                 coordinator.reloadEngine()
@@ -323,6 +341,10 @@ final class ModelStore: ObservableObject {
         case .gemma:
             Task { await deleteGemma() }
             return
+        }
+        let folder = kind.location
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            Task.detached(priority: .utility) { CompiledModelCache.removeCopies(of: folder) }
         }
         refresh()
     }

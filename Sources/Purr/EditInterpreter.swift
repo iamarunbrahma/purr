@@ -16,7 +16,8 @@ import FoundationModels
 // Both backends are asked for the same fenced text protocol; `parsePlan`
 // decodes it. Apple Foundation Models (macOS 26+) is the default; Gemma 4 E2B
 // via llama.cpp runs when picked in Settings › Voice Edit and on macOS 14-25,
-// sharing the summariser's weights.
+// sharing the summariser's weights. Once downloaded, Gemma also retries any
+// edit Apple's model can't make.
 @MainActor
 enum EditInterpreter {
     // Apple FM's 4096-token window is the tighter of the two backends; 4000
@@ -30,6 +31,7 @@ enum EditInterpreter {
         case selectionTooLong
         case emptyInstruction
         case interpretationFailed
+        case appleModelFailed
         case languageUnsupported
         case backend(Error)
 
@@ -43,6 +45,8 @@ enum EditInterpreter {
                 return "Didn't catch an edit. Try again."
             case .interpretationFailed:
                 return "Couldn't apply that edit. Try rephrasing it."
+            case .appleModelFailed:
+                return "Apple Intelligence couldn't make this edit. Try Gemma in Settings → Voice Edit."
             case .languageUnsupported:
                 return
                     "Voice Edit isn't available in this language. Switch to Gemma in Settings → Voice Edit."
@@ -74,19 +78,29 @@ enum EditInterpreter {
         SettingsStore.shared.voiceEditBackend == .llamaCpp && LLMModelManager.isInstalled()
     }
 
-    // Called the moment the voice-edit hotkey is pressed so a cold Gemma load
-    // overlaps with the user speaking instead of stalling the edit.
-    static func warmUp() {
+    #if canImport(FoundationModels)
+    // The Apple session warmUp(selection:) prewarmed, kept for that selection's
+    // edit. AnyObject because LanguageModelSession needs macOS 26.
+    private static var prewarmed: (session: AnyObject, selection: String)?
+    #endif
+
+    // Called the moment the voice-edit hotkey is pressed. Everything in the
+    // prompt before the instruction is known by then, so the model reads it
+    // while the user speaks, and a cold Gemma load overlaps the recording too.
+    static func warmUp(selection: String) {
         if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
-                LanguageModelSession(instructions: systemPrompt).prewarm()
+                let session = editSession()
+                session.prewarm(promptPrefix: Prompt(userTurnPrefix(selection: selection)))
+                prewarmed = (session, selection)
             }
             #endif
             return
         }
         if LLMModelManager.isInstalled() {
-            Task { await LlamaRuntime.shared.warmUp() }
+            let prefix = gemmaPromptPrefix(selection: selection)
+            Task { await LlamaRuntime.shared.warmUp(prefix: prefix) }
         }
     }
 
@@ -100,32 +114,53 @@ enum EditInterpreter {
         guard !instruction.isEmpty else { throw Failure.emptyInstruction }
         guard selection.count <= maxSelectionCharacters else { throw Failure.selectionTooLong }
 
-        let plan = try await interpret(instruction: instruction, selection: selection)
-        let edited = try applyPlan(plan, to: selection)
-        return reconcile(edited, plan: plan, selection: selection)
-    }
-
-    // MARK: - Backend routing
-
-    private static func interpret(
-        instruction: String, selection: String
-    ) async throws
-        -> VoiceEditPlan
-    {
         if appleFoundationReady, !prefersGemma {
             #if canImport(FoundationModels)
             if #available(macOS 26.0, *) {
-                return try await interpretWithAppleFM(instruction: instruction, selection: selection)
+                do {
+                    let plan = try await interpretWithAppleFM(instruction: instruction, selection: selection)
+                    let edited = try edit(selection, with: plan, instruction: instruction)
+                    guard edited != selection.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                        log.info("Apple FM's edit changed nothing.")
+                        throw Failure.interpretationFailed
+                    }
+                    return edited
+                } catch Failure.languageUnsupported where LLMModelManager.isInstalled() {
+                    log.info("Apple FM rejected the instruction locale; retrying with Gemma.")
+                } catch Failure.interpretationFailed {
+                    // A refusal, or an edit Purr can't use. Gemma gets one try at
+                    // this edit; the next one starts with Apple's model again.
+                    guard LLMModelManager.isInstalled() else { throw Failure.appleModelFailed }
+                    log.info("Apple FM gave no usable edit; retrying with Gemma.")
+                }
             }
             #endif
         }
-        if LLMModelManager.isInstalled() {
-            return try await interpretWithGemma(instruction: instruction, selection: selection)
-        }
-        throw Failure.noBackend
+        guard LLMModelManager.isInstalled() else { throw Failure.noBackend }
+        let plan = try await interpretWithGemma(instruction: instruction, selection: selection)
+        return try edit(selection, with: plan, instruction: instruction)
     }
 
+    // MARK: - Backends
+
     #if canImport(FoundationModels)
+    // Voice Edit rewrites the user's own text, which the default guardrails
+    // can refuse: they flagged "End with a period." on "hello world".
+    @available(macOS 26.0, *)
+    private static func editSession() -> LanguageModelSession {
+        LanguageModelSession(
+            model: SystemLanguageModel(guardrails: .permissiveContentTransformations),
+            instructions: systemPrompt)
+    }
+
+    // Each prewarmed session serves one edit at most.
+    @available(macOS 26.0, *)
+    private static func takePrewarmedSession(for selection: String) -> LanguageModelSession? {
+        defer { prewarmed = nil }
+        guard prewarmed?.selection == selection else { return nil }
+        return prewarmed?.session as? LanguageModelSession
+    }
+
     @available(macOS 26.0, *)
     private static func interpretWithAppleFM(
         instruction: String, selection: String
@@ -133,13 +168,9 @@ enum EditInterpreter {
         -> VoiceEditPlan
     {
         // A fresh session per edit - reusing one would accumulate prior turns
-        // against the 4096-token context budget.
-        let session = LanguageModelSession(instructions: systemPrompt)
-        let prompt = """
-            \(formatSpec)
-
-            \(userPrompt(instruction: instruction, selection: selection))
-            """
+        // against the 4096-token context budget. A prewarmed one is still fresh.
+        let session = takePrewarmedSession(for: selection) ?? editSession()
+        let prompt = userTurn(instruction: instruction, selection: selection)
         let raw: String
         do {
             let response = try await session.respond(
@@ -151,17 +182,18 @@ enum EditInterpreter {
             if case .exceededContextWindowSize = error { throw Failure.selectionTooLong }
             // Apple FM can reject the instruction's language at generation time
             // even when `supportsLocale()` passed — it returns true for "close"
-            // languages too. Fall through to Gemma when installed, matching
-            // MeetingSummarizer's locale fallback.
-            if case .unsupportedLanguageOrLocale = error {
-                guard LLMModelManager.isInstalled() else {
-                    log.info("Apple FM rejected the instruction locale; Gemma not installed.")
-                    throw Failure.languageUnsupported
-                }
-                log.info("Apple FM rejected the instruction locale; retrying with Gemma.")
-                return try await interpretWithGemma(instruction: instruction, selection: selection)
+            // languages too. `apply` falls through to Gemma when installed,
+            // matching MeetingSummarizer's locale fallback.
+            if case .unsupportedLanguageOrLocale = error { throw Failure.languageUnsupported }
+            // Permissive guardrails don't throw for a text reply, but Apple's
+            // model can still refuse, so both count as an unusable reply.
+            switch error {
+            case .guardrailViolation, .refusal:
+                log.info("Apple FM declined the edit.")
+                throw Failure.interpretationFailed
+            default:
+                throw Failure.backend(error)
             }
-            throw Failure.backend(error)
         }
         guard let plan = parsePlan(raw) else {
             log.error("Apple FM edit plan did not parse; raw length \(raw.count, privacy: .public).")
@@ -178,8 +210,11 @@ enum EditInterpreter {
     {
         let prompt = gemmaPrompt(instruction: instruction, selection: selection)
         // 1400 output tokens covers a holistic rewrite of a max-size selection;
-        // targeted edits stop early at end-of-turn.
-        let parameters = LlamaSession.Parameters(maxTokens: 1400, temperature: 0.2)
+        // targeted edits stop early at end-of-turn. 1.0 turns the repetition
+        // penalty off. Replies repeat their markers and copy words into the
+        // replacement, and the penalty made Gemma end replies before @@END@@
+        // and capitalize copied words.
+        let parameters = LlamaSession.Parameters(maxTokens: 1400, temperature: 0.2, repetitionPenalty: 1.0)
 
         let work = Task { try await LlamaRuntime.shared.generate(prompt: prompt, parameters: parameters) }
         let watchdog = Task<Void, Error> {
@@ -206,6 +241,33 @@ enum EditInterpreter {
     }
 
     // MARK: - Apply the plan
+
+    // Throws interpretationFailed when the plan can't be applied.
+    private static func edit(
+        _ selection: String, with plan: VoiceEditPlan, instruction: String
+    ) throws -> String {
+        let plan = keepingWordsBeforeEndMark(plan, selection: selection, instruction: instruction)
+        let edited = try applyPlan(plan, to: selection)
+        return reconcile(edited, plan: plan, selection: selection, instruction: instruction)
+    }
+
+    // Apple's model sometimes answers "end with a period" on "...jammed again"
+    // with find "again", replace ".", which deletes the word. A lone mark that
+    // replaces the passage's last words goes after them instead.
+    private static func keepingWordsBeforeEndMark(
+        _ plan: VoiceEditPlan, selection: String, instruction: String
+    ) -> VoiceEditPlan {
+        guard case .targeted = plan.scope, namesEndMark(instruction) else { return plan }
+        let passage = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        var repaired = plan
+        repaired.edits = plan.edits.map { span in
+            let isLoneMark = !span.replace.isEmpty && span.replace.allSatisfy(terminators.contains)
+            let hasWords = span.find.contains { $0.isLetter || $0.isNumber }
+            guard isLoneMark, hasWords, passage.hasSuffix(span.find) else { return span }
+            return VoiceEditPlan.Span(find: span.find, replace: span.find + span.replace)
+        }
+        return repaired
+    }
 
     private static func applyPlan(_ plan: VoiceEditPlan, to selection: String) throws -> String {
         switch plan.scope {
@@ -280,8 +342,10 @@ enum EditInterpreter {
 
     // MARK: - Deterministic post-processing
 
+    private static let terminators: Set<Character> = [".", "?", "!", "…"]
+
     private static func reconcile(
-        _ edited: String, plan: VoiceEditPlan, selection: String
+        _ edited: String, plan: VoiceEditPlan, selection: String, instruction: String
     )
         -> String
     {
@@ -289,9 +353,9 @@ enum EditInterpreter {
         // A targeted edit is interior and must not change the passage's ending
         // punctuation, so strip a terminator the edit introduced (ASR
         // completing the spoken phrase). Holistic rewrites are left alone —
-        // there, model-chosen punctuation is intentional.
-        guard case .targeted = plan.scope else { return result }
-        let terminators: Set<Character> = [".", "?", "!", "…"]
+        // there, model-chosen punctuation is intentional. So is a mark the
+        // instruction names ("end with a period").
+        guard case .targeted = plan.scope, !namesEndMark(instruction) else { return result }
         let selectionTerminated =
             lastNonWhitespace(of: selection).map(terminators.contains) ?? false
         guard !selectionTerminated else { return result }
@@ -335,6 +399,13 @@ enum EditInterpreter {
         text.reversed().first { !$0.isWhitespace }
     }
 
+    // English only, like the voice commands that name the same marks.
+    private static func namesEndMark(_ instruction: String) -> Bool {
+        instruction.range(
+            of: #"\b(period|full stop|question mark|exclamation|ellipsis)\b"#,
+            options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     // MARK: - Response parsing
 
     // Parses the fenced text protocol both backends are asked to emit. Returns
@@ -358,18 +429,23 @@ enum EditInterpreter {
         while let findMarker = text.range(of: "@@FIND@@", range: cursor..<text.endIndex) {
             guard
                 let replaceMarker = text.range(
-                    of: "@@REPLACE@@", range: findMarker.upperBound..<text.endIndex),
-                let endMarker = text.range(
-                    of: "@@END@@", range: replaceMarker.upperBound..<text.endIndex)
+                    of: "@@REPLACE@@", range: findMarker.upperBound..<text.endIndex)
             else { break }
+            // Gemma sometimes leaves a block's @@END@@ out, so a block also
+            // ends at the next @@FIND@@ or at the end of the reply.
+            let nextFind =
+                text.range(of: "@@FIND@@", range: replaceMarker.upperBound..<text.endIndex)?.lowerBound
+                ?? text.endIndex
+            let blockEnd =
+                text.range(of: "@@END@@", range: replaceMarker.upperBound..<nextFind) ?? nextFind..<nextFind
             let find = String(text[findMarker.upperBound..<replaceMarker.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let replace = String(text[replaceMarker.upperBound..<endMarker.lowerBound])
+            let replace = String(text[replaceMarker.upperBound..<blockEnd.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !find.isEmpty {
                 spans.append(VoiceEditPlan.Span(find: find, replace: replace))
             }
-            cursor = endMarker.upperBound
+            cursor = blockEnd.upperBound
         }
         return spans.isEmpty ? nil : VoiceEditPlan(scope: .targeted, edits: spans, rewrite: "")
     }
@@ -457,8 +533,12 @@ enum EditInterpreter {
         @@END@@
         """
 
-    private static func userPrompt(instruction: String, selection: String) -> String {
+    // The user turn, the same for both backends. The instruction comes last,
+    // so warmUp(selection:) can have the model read everything before it.
+    private static func userTurnPrefix(selection: String) -> String {
         """
+        \(formatSpec)
+
         Selected passage:
         \"\"\"
         \(selection)
@@ -466,26 +546,26 @@ enum EditInterpreter {
 
         Spoken instruction:
         \"\"\"
-        \(instruction)
-        \"\"\"
+
         """
+    }
+
+    private static func userTurn(instruction: String, selection: String) -> String {
+        userTurnPrefix(selection: selection) + "\(instruction)\n\"\"\""
     }
 
     // Gemma 4's chat template: the role goes in the system turn, format and
     // request in the user turn. The BOS token is added by the tokenizer and
     // <turn|> closes each turn. No <|think|> in the system turn, so the model
     // answers without a reasoning block.
+    private static let gemmaTurnsBeforeUser = "<|turn>system\n\(systemPrompt)<turn|>\n<|turn>user\n"
+
+    private static func gemmaPromptPrefix(selection: String) -> String {
+        gemmaTurnsBeforeUser + userTurnPrefix(selection: selection)
+    }
+
     private static func gemmaPrompt(instruction: String, selection: String) -> String {
-        """
-        <|turn>system
-        \(systemPrompt)<turn|>
-        <|turn>user
-        \(formatSpec)
-
-        \(userPrompt(instruction: instruction, selection: selection))<turn|>
-        <|turn>model
-
-        """
+        gemmaTurnsBeforeUser + userTurn(instruction: instruction, selection: selection) + "<turn|>\n<|turn>model\n"
     }
 }
 

@@ -71,21 +71,11 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Update Purr") {
-                    Task { await updater.updatePurr() }
+                    Task { await updater.updatePurr(canQuit: { coordinator.safeToQuit }) }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!coordinator.safeToQuit)
-                if coordinator.safeToQuit {
-                    Text("Purr will quit, replace itself, then relaunch.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                } else {
-                    Text("Finish your current recording before updating.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .multilineTextAlignment(.center)
-                }
+                installCaption
             }
 
         case .downloading(let progress):
@@ -97,14 +87,17 @@ struct AboutView: View {
                     .foregroundStyle(.secondary)
             }
 
-        case .readyToInstall:
-            // Transient - updatePurr() flips straight to .installing, so this
-            // shows only if the chained install fails to fire.
+        case .readyToInstall(_, let version):
+            // Downloaded while a recording was under way, or after a cancelled quit.
             VStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Preparing installer…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("Version \(version) downloaded")
+                    .font(.callout.weight(.medium))
+                Button("Install and Relaunch") {
+                    Task { await updater.installAndRelaunch() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!coordinator.safeToQuit)
+                installCaption
             }
 
         case .installing:
@@ -125,6 +118,21 @@ struct AboutView: View {
                     Task { await updater.checkForUpdates() }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var installCaption: some View {
+        if coordinator.safeToQuit {
+            Text("Purr will quit, replace itself, then relaunch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        } else {
+            Text("Finish your current recording before updating.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
         }
     }
 
