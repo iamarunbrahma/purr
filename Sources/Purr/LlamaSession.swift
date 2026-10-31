@@ -157,31 +157,63 @@ final class LlamaSession {
         defer { llama_batch_free(batch) }
         try decodePrompt(tokens, batch: &batch, chunkSize: Int(parameters.nBatch))
 
-        // 4. Sample a token, keep its bytes, feed it back as a single-token
-        //    batch. Stops on EOG (Gemma 4 emits <turn|>), the cap, or
-        //    cancellation. Bytes rather than Strings accumulate because a
-        //    character outside the vocabulary arrives as several byte tokens,
-        //    each one an incomplete UTF-8 sequence on its own.
+        // 4. Sample a token, keep its bytes, and decode it in one batch with
+        //    the tokens guessed to follow it (see guesses(after:limit:)). Each
+        //    guess the sampler then draws again is kept without a decode of
+        //    its own, and the cells from the first wrong guess on are dropped.
+        //    Every kept token is still sampled in order, so guessing changes
+        //    the speed, not what the sampler can produce. Stops on EOG (Gemma 4
+        //    emits <turn|>), the cap, or cancellation. Bytes rather than
+        //    Strings accumulate because a character outside the vocabulary
+        //    arrives as several byte tokens, each one an incomplete UTF-8
+        //    sequence on its own.
         var output: [UInt8] = []
+        var history = tokens
         var pos = Int32(tokens.count)
+        var generated = 0
+        var decodes = 0
         let maxTokens = parameters.maxTokens
+        let memory = llama_get_memory(context)
 
-        for _ in 0..<maxTokens {
+        var token = llama_sampler_sample(sampler, context, -1)
+        while generated < maxTokens, !llama_vocab_is_eog(vocab, token) {
             if Task.isCancelled { throw LlamaError.cancelled }
+            output.append(contentsOf: Self.tokenBytes(token: token, vocab: vocab))
+            history.append(token)
+            generated += 1
+            if generated == maxTokens { break }
 
-            let newToken = llama_sampler_sample(sampler, context, -1)
-            if llama_vocab_is_eog(vocab, newToken) { break }
-
-            output.append(contentsOf: Self.tokenBytes(token: newToken, vocab: vocab))
-
+            let guesses = Self.guesses(after: history, limit: min(Self.maxGuesses, maxTokens - generated))
             llamaBatchClear(&batch)
-            llamaBatchAdd(&batch, newToken, pos, [0], true)
-            pos += 1
-
+            llamaBatchAdd(&batch, token, pos, [0], true)
+            for (i, guess) in guesses.enumerated() {
+                llamaBatchAdd(&batch, guess, pos + 1 + Int32(i), [0], true)
+            }
             let stepRC = llama_decode(context, batch)
             if stepRC != 0 { throw LlamaError.decodeFailed(code: stepRC) }
-            cachedTokens.append(newToken)
+            decodes += 1
+            cachedTokens.append(token)
+            pos += 1
+
+            // Row 0 of the batch's logits follows `token`, row i guesses[i - 1].
+            var kept = 0
+            token = llama_sampler_sample(sampler, context, 0)
+            while kept < guesses.count, token == guesses[kept], !llama_vocab_is_eog(vocab, token) {
+                output.append(contentsOf: Self.tokenBytes(token: token, vocab: vocab))
+                history.append(token)
+                cachedTokens.append(token)
+                generated += 1
+                pos += 1
+                kept += 1
+                token = llama_sampler_sample(sampler, context, Int32(kept))
+            }
+            // swa_full keeps every cell, so dropping the tail can't fail; if it
+            // did, stale cells would sit where the next token goes.
+            if kept < guesses.count, !llama_memory_seq_rm(memory, 0, pos, -1) {
+                throw LlamaError.decodeFailed(code: -1)
+            }
         }
+        log.info("Llama reply: \(generated, privacy: .public) tokens in \(decodes, privacy: .public) decodes")
 
         return String(decoding: output, as: UTF8.self)
     }
@@ -257,6 +289,31 @@ final class LlamaSession {
             cachedTokens.append(contentsOf: tokens[offset..<end])
             offset = end
         }
+    }
+
+    // llama.cpp's Metal kernels decode a few tokens for little more than the
+    // cost of one; past 4 guesses, meeting minutes were no faster.
+    private static let maxGuesses = 4
+
+    // Prompt lookup: the tokens that followed the latest earlier occurrence
+    // of the last three tokens (else two), in the prompt or the reply so far.
+    // Minutes and edits copy names and phrases from their transcript or
+    // selection, so these are often right.
+    private static func guesses(after history: [llama_token], limit: Int) -> [llama_token] {
+        guard limit > 0 else { return [] }
+        for n in [3, 2] where history.count > n {
+            let tail = history.count - n
+            var start = tail - 1
+            while start >= 0 {
+                var matched = 0
+                while matched < n, history[start + matched] == history[tail + matched] { matched += 1 }
+                if matched == n {
+                    return Array(history[(start + n)..<min(start + n + limit, history.count)])
+                }
+                start -= 1
+            }
+        }
+        return []
     }
 
     // token_to_piece may need more than 16 bytes for a long piece; a negative
