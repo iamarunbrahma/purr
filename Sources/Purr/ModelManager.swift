@@ -14,10 +14,14 @@ enum ModelManager {
     // in memory and runs on the ANE; the un-suffixed variant is full-precision and
     // ~1.5 GB, so we deliberately don't surface it. WhisperKit's device table leaves
     // this build off for M1 Macs, where its first Neural Engine compile is known to
-    // be very slow, so those don't list it and default to Large V3.
-    private static let turboModel = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    // be very slow, and makes `_626MB`, another quantised build of the same model,
+    // their default, so M1 Macs get that one.
     private static let disabledOnThisMac = Set(WhisperKit.recommendedModels().disabled)
-    static let defaultModel = disabledOnThisMac.contains(turboModel) ? "openai_whisper-large-v3_947MB" : turboModel
+    private static let turbo =
+        disabledOnThisMac.contains("openai_whisper-large-v3-v20240930_turbo_632MB")
+        ? (id: "openai_whisper-large-v3-v20240930_626MB", sizeMB: 598)
+        : (id: "openai_whisper-large-v3-v20240930_turbo_632MB", sizeMB: 616)
+    static let defaultModel = turbo.id
     static let modelRepo = "argmaxinc/whisperkit-coreml"
 
     // Curated list shown in Settings: WhisperKit's repo has dozens of variants, and
@@ -67,9 +71,9 @@ enum ModelManager {
             supportsTranslation: true
         ),
         ModelChoice(
-            id: turboModel,
+            id: turbo.id,
             label: "Large V3 Turbo",
-            sizeMB: 616,
+            sizeMB: turbo.sizeMB,
             note: "Best quality at real-time speed on Apple Silicon.",
             supportsTranslation: false
         ),
