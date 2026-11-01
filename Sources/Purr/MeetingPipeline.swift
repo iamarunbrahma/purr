@@ -239,15 +239,18 @@ final class MeetingPipeline: ObservableObject {
             let audioLocalSamples: [Float]
             let audioRemoteSamples: [Float]?
             if systemSamples.isEmpty {
-                // Mic-only: no diarization, since a single track can't
-                // reliably separate in-room speakers - every utterance is "You".
+                // Mic-only: one track carries everyone in the room, so the
+                // diarizer splits it into Speaker N. One voice stays "You".
+                async let segmentsTask = speakerSegments(of: samples, track: "mic")
                 let asr = try await transcribeMeetingAudio(samples: samples)
                 logASRResult(asr, track: "mic")
+                let segments = await segmentsTask
                 log.info(
-                    "Meeting transcribe complete in \(String(format: "%.2f", Date().timeIntervalSince(processingStarted)), privacy: .public)s: \(asr.tokenTimings?.count ?? 0, privacy: .public) tokens, single local speaker (You)"
+                    "Meeting transcribe complete in \(String(format: "%.2f", Date().timeIntervalSince(processingStarted)), privacy: .public)s: \(asr.tokenTimings?.count ?? 0, privacy: .public) tokens, \(Set(segments.map(\.speakerId)).count, privacy: .public) speakers in \(segments.count, privacy: .public) segments"
                 )
                 document = MeetingDocument.format(
                     localOnly: asr,
+                    segments: segments,
                     engine: meetingModelName,
                     duration: duration,
                     recordedAt: Date()
@@ -262,30 +265,10 @@ final class MeetingPipeline: ObservableObject {
                 let cleanedMic = await Task.detached {
                     EchoCanceller.process(mic: samples, reference: systemSamples)
                 }.value
-                let diarize: @Sendable () async throws -> [TimedSpeakerSegment] = { [diarizer] in
-                    try await diarizer.diarize(samples: systemSamples)
-                }
-                async let remoteSegmentsTask = withTimeout(
-                    Self.diarizationLimit(samples: systemSamples.count), operation: diarize)
+                async let remoteSegmentsTask = speakerSegments(of: systemSamples, track: "system")
                 let remoteASR = try await transcribeMeetingAudio(samples: systemSamples)
                 let localASR = try await transcribeMeetingAudio(samples: cleanedMic)
-                // A diarization failure (no remote speech, music, silence)
-                // must not sink the meeting - keep both transcripts, remote
-                // just won't carry Speaker N labels.
-                let remoteSegments: [TimedSpeakerSegment]
-                do {
-                    remoteSegments = try await remoteSegmentsTask
-                } catch is TimedOutError {
-                    log.error(
-                        "Meeting diarization ran past its limit - saving transcripts without remote speaker labels."
-                    )
-                    remoteSegments = []
-                } catch {
-                    log.error(
-                        "Meeting diarization failed on the system track (\(error.localizedDescription, privacy: .public)) - saving transcripts without remote speaker labels."
-                    )
-                    remoteSegments = []
-                }
+                let remoteSegments = await remoteSegmentsTask
                 log.info(
                     "Meeting dual-track complete in \(String(format: "%.2f", Date().timeIntervalSince(processingStarted)), privacy: .public)s: local \(localASR.tokenTimings?.count ?? 0, privacy: .public) tokens, remote \(remoteASR.tokenTimings?.count ?? 0, privacy: .public) tokens, \(remoteSegments.count, privacy: .public) speaker segments"
                 )
@@ -461,6 +444,26 @@ final class MeetingPipeline: ObservableObject {
         case .modelLoadFailed, .emptyResponse, .generationFailed:
             return generic
         }
+    }
+
+    // A diarization failure (no speech, music, silence) must not sink the
+    // meeting: the transcript is kept, just without Speaker N labels.
+    private func speakerSegments(of samples: [Float], track: String) async -> [TimedSpeakerSegment] {
+        let diarize: @Sendable () async throws -> [TimedSpeakerSegment] = { [diarizer] in
+            try await diarizer.diarize(samples: samples)
+        }
+        do {
+            return try await withTimeout(Self.diarizationLimit(samples: samples.count), operation: diarize)
+        } catch is TimedOutError {
+            log.error(
+                "Meeting diarization ran past its limit on the \(track, privacy: .public) track - saving it without speaker labels."
+            )
+        } catch {
+            log.error(
+                "Meeting diarization failed on the \(track, privacy: .public) track (\(error.localizedDescription, privacy: .public)) - saving it without speaker labels."
+            )
+        }
+        return []
     }
 
     // Routes to Parakeet v2 (English default) or Ultra (multilingual) per

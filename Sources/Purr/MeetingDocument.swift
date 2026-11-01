@@ -18,21 +18,30 @@ enum MeetingDocument {
         let recordedAt: Date
     }
 
-    // Mic-only: every utterance is "You" - no diarization runs on this track,
-    // since it can't reliably separate speakers that share one microphone.
+    // Mic-only. When the diarizer hears two or more voices, each word goes
+    // to its Speaker N, since one microphone can't tell which voice is the
+    // user's. Otherwise every utterance is "You".
     static func format(
         localOnly asr: ASRResult,
+        segments: [TimedSpeakerSegment] = [],
         engine: String,
         duration: TimeInterval,
         recordedAt: Date
     ) -> Output {
-        let utterances = localUtterances(asr: asr)
+        let labelMap = buildLabelMap(segments: segments)
+        var utterances =
+            labelMap.count >= 2 ? remoteUtterances(asr: asr, segments: segments, labelMap: labelMap) : []
+        // Two voices can still leave every word with one of them.
+        let diarized = Set(utterances.map(\.speaker)).count >= 2
+        if !diarized {
+            utterances = localUtterances(asr: asr)
+        }
 
         var body = ""
         body += "# Meeting - \(formatTimestamp(recordedAt))\n\n"
         body += "_Duration: \(formatDuration(duration))_  "
-        body += "_Speakers: \(utterances.isEmpty ? 0 : 1)_  "
-        body += "_Engine: \(engine)_\n\n"
+        body += "_Speakers: \(Set(utterances.map(\.speaker)).count)_  "
+        body += "_Engine: \(engine)\(diarized ? " + FluidAudio Diarizer" : "")_\n\n"
         body += "---\n\n"
 
         if utterances.isEmpty {

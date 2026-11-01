@@ -94,6 +94,8 @@ Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** 
 
 Yes. It records your mic and your Mac's audio output together, so remote voices are transcribed too. On macOS 14.0 and 14.1, only your mic is recorded.
 
+When nothing plays through your Mac, like a meeting around one table, Purr tells the voices your mic hears apart and labels them Speaker 1, Speaker 2 and so on.
+
 </details>
 
 <details>
