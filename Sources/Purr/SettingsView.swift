@@ -30,7 +30,7 @@ struct SettingsView: View {
                     case .engine: EnginePane(coordinator: coordinator, models: models)
                     case .meetings: MeetingsPane(coordinator: coordinator, models: models)
                     case .voiceEdit: VoiceEditPane(coordinator: coordinator, models: models)
-                    case .vocabulary: VocabularyPane()
+                    case .vocabulary: VocabularyPane(models: models)
                     case .models: ModelsPane(models: models)
                     }
                 }
@@ -635,9 +635,35 @@ private struct VoiceEditPane: View {
 
 private struct VocabularyPane: View {
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject var models: ModelStore
 
     var body: some View {
         Form {
+            Section {
+                if models[.vocabulary].needsAttention {
+                    ModelRow(kind: .vocabulary, models: models, showsPurpose: true)
+                }
+                ForEach($settings.vocabularyWords) { $entry in
+                    HStack {
+                        TextField("Word", text: $entry.word, prompt: Text("Name or term"))
+                            .labelsHidden()
+                        RemoveButton {
+                            settings.vocabularyWords.removeAll { $0.id == entry.id }
+                        }
+                    }
+                }
+                AddButton("Add Word") {
+                    settings.vocabularyWords.append(VocabularyWordEntry(word: ""))
+                }
+                .help("Names and terms to listen for, spelled the way you write them. Three letters or more.")
+            } header: {
+                Text("Words")
+            } footer: {
+                if settings.engine != .parakeet {
+                    Text("Words need the Parakeet engine.")
+                }
+            }
+
             Section("Replacements") {
                 ForEach($settings.dictionary) { $entry in
                     PairRow(from: $entry.from, to: $entry.to, fromPrompt: "Heard as", toPrompt: "Write as") {
@@ -773,7 +799,7 @@ private struct ModelsPane: View {
             }
 
             Section("Models") {
-                ForEach([ModelKind.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .gemma]) { kind in
+                ForEach([ModelKind.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .vocabulary, .gemma]) { kind in
                     ModelRow(kind: kind, models: models, showsPurpose: true)
                 }
             }

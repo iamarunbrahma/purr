@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
 - **Voice Edit** rewrites selected text when you say what to change.
 - **Languages**: English by default, about 100 for dictation with Whisper, and 28 for meetings.
 - **Voice commands** for punctuation, new lines and "scratch that", plus your own.
-- **Vocabulary** fixes the names and acronyms it mishears, and drops "um" and "uh".
+- **Vocabulary** listens for the names and terms you add, fixes words it keeps mishearing, and drops "um" and "uh".
 - **Private**: no account, no cloud, no telemetry.
 
 ## Screenshots

@@ -60,11 +60,12 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     case parakeetMultilingual
     case smartTyping
     case diarizer
+    case vocabulary
     case gemma
     case whisper(String)
 
     static var all: [ModelKind] {
-        [.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .gemma]
+        [.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .vocabulary, .gemma]
             + ModelManager.curatedModels.map { .whisper($0.id) }
     }
 
@@ -74,6 +75,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return "parakeet-ultra"
         case .smartTyping: return "parakeet-eou"
         case .diarizer: return "diarizer"
+        case .vocabulary: return "parakeet-ctc"
         case .gemma: return "gemma"
         case .whisper(let name): return name
         }
@@ -85,6 +87,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return "Parakeet Ultra"
         case .smartTyping: return "Parakeet EOU 120M"
         case .diarizer: return "Speaker Diarization"
+        case .vocabulary: return "Parakeet CTC 110M"
         case .gemma: return LLMModelManager.defaultModelLabel
         case .whisper(let name): return "Whisper \(Self.whisperChoice(name)?.label ?? name)"
         }
@@ -97,6 +100,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return "Meetings in other languages"
         case .smartTyping: return "Smart Typing"
         case .diarizer: return "Who said what in meetings"
+        case .vocabulary: return "Your words in dictation"
         case .gemma: return "Summaries and voice edit"
         case .whisper(let name): return Self.whisperChoice(name)?.note ?? "Dictation"
         }
@@ -110,6 +114,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return 632_314_500
         case .smartTyping: return 224_238_533
         case .diarizer: return 21_776_918
+        case .vocabulary: return 102_803_869
         case .gemma: return LLMModelManager.defaultModelExpectedSize
         case .whisper(let name): return Int64(Self.whisperChoice(name)?.sizeMB ?? 0) * 1_048_576
         }
@@ -122,6 +127,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return ParakeetEngine.meetingModelDirectory
         case .smartTyping: return ParakeetEngine.eouModelDirectory
         case .diarizer: return Diarizer.modelDirectory
+        case .vocabulary: return VocabularyBooster.modelDirectory
         case .gemma: return LLMModelManager.localURL
         case .whisper(let name):
             return ModelManager.modelsDirectory.appendingPathComponent(name, isDirectory: true)
@@ -136,6 +142,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return ParakeetEngine.meetingModelIsInstalled()
         case .smartTyping: return ParakeetEngine.eouIsInstalled()
         case .diarizer: return Diarizer.isInstalled()
+        case .vocabulary: return VocabularyBooster.isInstalled()
         case .gemma: return LLMModelManager.isInstalled()
         case .whisper(let name): return ModelManager.isInstalled(name)
         }
@@ -191,6 +198,9 @@ final class ModelStore: ObservableObject {
             .store(in: &observers)
         coordinator.$meetingLanguageModelProgress
             .sink { [weak self] in self?.mirror(.parakeetMultilingual, $0) }
+            .store(in: &observers)
+        coordinator.$vocabularyModelProgress
+            .sink { [weak self] in self?.mirror(.vocabulary, $0) }
             .store(in: &observers)
         coordinator.$compilingWhisperModel
             .sink { [weak self] compiling in
@@ -292,6 +302,8 @@ final class ModelStore: ObservableObject {
             }
             defer { compileWatch.cancel() }
             try Self.check(await coordinator.downloadDiarizationModel())
+        case .vocabulary:
+            try Self.check(await coordinator.downloadVocabularyModel())
         case .gemma:
             // Doesn't pre-load the LlamaSession - that happens lazily on first
             // summarize, so Settings doesn't wait through model-init.
@@ -332,6 +344,8 @@ final class ModelStore: ObservableObject {
             report(kind, coordinator.deleteEOUModel(), busy: "Release the dictation shortcut, then try again.")
         case .diarizer:
             report(kind, coordinator.deleteDiarizationModel(), busy: "Stop the meeting, then try again.")
+        case .vocabulary:
+            report(kind, coordinator.deleteVocabularyModel(), busy: "Finish dictating, then try again.")
         case .whisper(let name):
             do {
                 try ModelManager.delete(name)

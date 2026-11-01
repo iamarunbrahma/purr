@@ -32,6 +32,7 @@ final class SettingsStore: ObservableObject {
         static let dictionary = "post.dictionary"
         static let customVoiceCommands = "post.customVoiceCommands"
         static let customFillerWords = "post.customFillerWords"
+        static let vocabularyWords = "stt.vocabularyWords"
         static let trimFillers = "post.trimFillers"
         static let summarizeMeetings = "feature.summarizeMeetings"
         static let summaryBackend = "feature.summaryBackend"
@@ -225,6 +226,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // Names and terms dictation listens for (VocabularyBooster).
+    @Published var vocabularyWords: [VocabularyWordEntry] {
+        didSet {
+            if let data = try? JSONEncoder().encode(vocabularyWords) {
+                defaults.set(data, forKey: Keys.vocabularyWords)
+            }
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -274,6 +284,13 @@ final class SettingsStore: ObservableObject {
             self.customFillerWords = entries
         } else {
             self.customFillerWords = []
+        }
+        if let data = defaults.data(forKey: Keys.vocabularyWords),
+            let entries = try? JSONDecoder().decode([VocabularyWordEntry].self, from: data)
+        {
+            self.vocabularyWords = entries
+        } else {
+            self.vocabularyWords = []
         }
 
         let mKey = defaults.object(forKey: Keys.meetingHotkeyKey) as? Int
@@ -341,6 +358,7 @@ final class SettingsStore: ObservableObject {
         dictionary = []
         customVoiceCommands = []
         customFillerWords = []
+        vocabularyWords = []
     }
 
     private func persistHotkey() {
@@ -444,6 +462,12 @@ struct VoiceCommandEntry: Codable, Equatable, Identifiable, Hashable {
 // One custom filler word or phrase. Matched case-insensitively as a whole
 // word and removed during the filler-trim pass.
 struct FillerWordEntry: Codable, Equatable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var word: String
+}
+
+// One name or term dictation listens for, spelled as it should be written.
+struct VocabularyWordEntry: Codable, Equatable, Identifiable, Hashable {
     var id: UUID = UUID()
     var word: String
 }

@@ -34,6 +34,8 @@ final class ParakeetEngine: TranscriptionEngine {
     private var streamingManager: StreamingEouAsrManager?
     private var streamingWarmupTask: Task<Void, Never>?
     let eouDownload = DownloadReporter()
+    // Swaps the user's Words into dictation.
+    let vocabulary = VocabularyBooster()
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet")
 
     // 320ms: FluidAudio's benchmarks put it at 4.88% WER vs 8.23% at 160ms,
@@ -54,6 +56,7 @@ final class ParakeetEngine: TranscriptionEngine {
         {
             _ = streamingLoad()
         }
+        vocabulary.warmup()
     }
 
     var isLoaded: Bool { batchManager != nil }
@@ -289,7 +292,7 @@ final class ParakeetEngine: TranscriptionEngine {
     func transcribe(samples: [Float]) async throws -> String {
         try await load()
         let detailed = try await transcribeDetailed(samples: samples)
-        return TranscriptCleaner.clean(detailed.text)
+        return TranscriptCleaner.clean(await vocabulary.apply(to: detailed, samples: samples))
     }
 
     // Returns token timings (dropped by transcribe()) for diarization merge.

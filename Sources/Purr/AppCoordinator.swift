@@ -77,8 +77,9 @@ final class AppCoordinator: ObservableObject {
     // automatic warmup download and a manual Download tap.
     @Published private(set) var parakeetBatchProgress: ModelDownloadProgress?
     @Published private(set) var eouDownloadProgress: ModelDownloadProgress?
-    // Unlike the other two, this one never auto-downloads during warmup.
+    // Unlike the other two, these never auto-download during warmup.
     @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
+    @Published private(set) var vocabularyModelProgress: ModelDownloadProgress?
     // The Whisper model in its first Neural Engine compile, for Settings.
     @Published private(set) var compilingWhisperModel: String?
 
@@ -109,6 +110,7 @@ final class AppCoordinator: ObservableObject {
     private var voiceEditor: VoiceEditor!
     private var meetingObserver: AnyCancellable?
     private var voiceEditObserver: AnyCancellable?
+    private var vocabularyObserver: AnyCancellable?
     private var accessibilityObserver: NSObjectProtocol?
 
     private var levelTask: Task<Void, Never>?
@@ -148,6 +150,17 @@ final class AppCoordinator: ObservableObject {
         parakeet.meetingBatchDownload.onChange = { [weak self] progress in
             self?.meetingLanguageModelProgress = progress
         }
+        parakeet.vocabulary.download.onChange = { [weak self] progress in
+            self?.vocabularyModelProgress = progress
+        }
+        // Words added after launch load the model then, not on the first
+        // dictation that needs it.
+        vocabularyObserver = SettingsStore.shared.$vocabularyWords
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] hasWords in
+                if hasWords { self?.parakeet.vocabulary.warmup() }
+            }
 
         // Smart Typing whose model was deleted outside Purr gets turned off
         // rather than silently pulling ~440MB.
@@ -238,6 +251,34 @@ final class AppCoordinator: ObservableObject {
         SettingsStore.shared.meetingEnabled = false
         installHotkeys()
         log.info("Diarizer delete: on-disk removed; meetingEnabled flipped off.")
+        return .ok
+    }
+
+    func downloadVocabularyModel() async -> ModelDownloadResult {
+        do {
+            try await parakeet.vocabulary.downloadAndLoad()
+            return .ok
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // Keeps the Words, which wait for the model to come back.
+    @discardableResult
+    func deleteVocabularyModel() -> DiarizerDeleteResult {
+        switch state {
+        case .recording, .transcribing: return .busy
+        case .idle, .error: break
+        }
+        if streamingSession != nil || streamingStartupInFlight { return .busy }
+        if voiceEditState != .idle || vocabularyModelProgress != nil { return .busy }
+        parakeet.vocabulary.unload()
+        do {
+            try VocabularyBooster.delete()
+        } catch {
+            return .failed(error)
+        }
+        log.info("Vocabulary model deleted on user request.")
         return .ok
     }
 
@@ -400,6 +441,7 @@ final class AppCoordinator: ObservableObject {
         parakeet.unloadStreamingManager()
         parakeet.unloadBatchManager()
         parakeet.unloadMeetingManager()
+        parakeet.vocabulary.unload()
         return true
     }
 
@@ -408,7 +450,7 @@ final class AppCoordinator: ObservableObject {
         if streamingSession != nil || streamingStartupInFlight { return false }
         if voiceEditState != .idle { return false }
         if parakeetBatchProgress != nil || eouDownloadProgress != nil { return false }
-        return meetingLanguageModelProgress == nil
+        return meetingLanguageModelProgress == nil && vocabularyModelProgress == nil
     }
 
     private func rebuildEngine(initial: Bool) {
