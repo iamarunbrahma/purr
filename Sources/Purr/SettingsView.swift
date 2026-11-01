@@ -585,11 +585,13 @@ private struct VoiceEditPane: View {
                     )
                 }
                 if models.appleIntelligenceAvailable {
-                    Picker("Model", selection: $settings.voiceEditBackend) {
+                    Picker("Model", selection: backend) {
                         Text("Apple Intelligence").tag(SettingsStore.SummaryBackend.appleFoundation)
                         Text(ModelKind.gemma.title).tag(SettingsStore.SummaryBackend.llamaCpp)
                     }
-                    .help("Apple's model is built into macOS. Gemma is a 3.35 GB download that covers more languages.")
+                    .help(
+                        "Apple's model is built into macOS. Gemma is a 3.35 GB download that gets more edits right and covers more languages. Once it's downloaded, edits use it unless you pick Apple Intelligence."
+                    )
                 } else {
                     LabeledContent("Model", value: modelName)
                         .help("Edits are understood by an AI model running on this Mac.")
@@ -613,8 +615,16 @@ private struct VoiceEditPane: View {
         models[.gemma].isOnDisk ? ModelKind.gemma.title : "None"
     }
 
+    // The model edits use: the one picked here, else Gemma once it's
+    // downloaded, as EditInterpreter decides. Picking one keeps it.
+    private var backend: Binding<SettingsStore.SummaryBackend> {
+        Binding(
+            get: { settings.voiceEditBackend ?? (models[.gemma].isOnDisk ? .llamaCpp : .appleFoundation) },
+            set: { settings.voiceEditBackend = $0 })
+    }
+
     private var showsGemmaDownload: Bool {
-        (!models.appleIntelligenceAvailable || settings.voiceEditBackend == .llamaCpp)
+        (!models.appleIntelligenceAvailable || backend.wrappedValue == .llamaCpp)
             && models[.gemma].needsAttention
     }
 }

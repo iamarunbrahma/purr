@@ -14,10 +14,10 @@ import FoundationModels
 // the model returns full text.
 //
 // Both backends are asked for the same fenced text protocol; `parsePlan`
-// decodes it. Apple Foundation Models (macOS 26+) is the default; Gemma 4 E2B
-// via llama.cpp runs when picked in Settings › Voice Edit and on macOS 14-25,
-// sharing the summariser's weights. Once downloaded, Gemma also retries any
-// edit Apple's model can't make.
+// decodes it. Gemma 4 E2B via llama.cpp, sharing the summariser's weights,
+// runs once it's downloaded. Until then, or when picked in Settings › Voice
+// Edit, Apple Foundation Models (macOS 26+) does, and a downloaded Gemma
+// retries any edit Apple's model can't make.
 @MainActor
 enum EditInterpreter {
     // Apple FM's 4096-token window is the tighter of the two backends; 4000
@@ -72,10 +72,12 @@ enum EditInterpreter {
         return false
     }
 
-    // Gemma once it's picked and downloaded. Until it's downloaded, Apple's
-    // model keeps Voice Edit working, as MeetingSummarizer does for summaries.
+    // Gemma once it's downloaded, unless Apple's model was picked in Settings:
+    // Gemma made 96 of 96 test edits exactly, Apple's model 68. Until it's
+    // downloaded, Apple's model keeps Voice Edit working, as MeetingSummarizer
+    // does for summaries.
     private static var prefersGemma: Bool {
-        SettingsStore.shared.voiceEditBackend == .llamaCpp && LLMModelManager.isInstalled()
+        SettingsStore.shared.voiceEditBackend != .appleFoundation && LLMModelManager.isInstalled()
     }
 
     #if canImport(FoundationModels)
@@ -246,9 +248,15 @@ enum EditInterpreter {
     private static func edit(
         _ selection: String, with plan: VoiceEditPlan, instruction: String
     ) throws -> String {
-        let plan = keepingWordsBeforeEndMark(plan, selection: selection, instruction: instruction)
-        let edited = try applyPlan(plan, to: selection)
-        return reconcile(edited, plan: plan, selection: selection, instruction: instruction)
+        let plan = completingSwap(
+            keepingWordsBeforeEndMark(plan, selection: selection, instruction: instruction),
+            instruction: instruction)
+        let edited = try applyPlan(plan, to: selection, instruction: instruction)
+        let result = reconcile(edited, plan: plan, selection: selection, instruction: instruction)
+        // No edit empties the selection: that's a misread instruction, like
+        // "delete the first sentence" answered with the whole passage.
+        guard !result.isEmpty else { throw Failure.interpretationFailed }
+        return result
     }
 
     // Apple's model sometimes answers "end with a period" on "...jammed again"
@@ -269,7 +277,32 @@ enum EditInterpreter {
         return repaired
     }
 
-    private static func applyPlan(_ plan: VoiceEditPlan, to selection: String) throws -> String {
+    // Asked to swap two words, both models sometimes give one direction only:
+    // John → Sarah, which leaves "Sarah and cc Sarah". When the instruction
+    // names the pair, the other direction goes with it.
+    private static func completingSwap(_ plan: VoiceEditPlan, instruction: String) -> VoiceEditPlan {
+        guard case .targeted = plan.scope, plan.edits.count == 1, let span = plan.edits.first,
+            !span.find.isEmpty, !span.replace.isEmpty,
+            namesSwap(of: span.find, and: span.replace, in: instruction)
+        else { return plan }
+        var completed = plan
+        completed.edits.append(VoiceEditPlan.Span(find: span.replace, replace: span.find))
+        return completed
+    }
+
+    // "Swap John and Sarah", "switch Sarah with John". English only, like
+    // namesEndMark.
+    private static func namesSwap(of a: String, and b: String, in instruction: String) -> Bool {
+        let (x, y) = (NSRegularExpression.escapedPattern(for: a), NSRegularExpression.escapedPattern(for: b))
+        let options: String.CompareOptions = [.regularExpression, .caseInsensitive]
+        return instruction.range(of: #"\b(swap|switch|exchange)\b"#, options: options) != nil
+            && instruction.range(
+                of: #"\b(\#(x)\s+(and|with)\s+\#(y)|\#(y)\s+(and|with)\s+\#(x))\b"#, options: options) != nil
+    }
+
+    private static func applyPlan(
+        _ plan: VoiceEditPlan, to selection: String, instruction: String
+    ) throws -> String {
         switch plan.scope {
         case .holistic:
             let rewrite = plan.rewrite.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -294,50 +327,139 @@ enum EditInterpreter {
                 throw Failure.interpretationFailed
             }
 
-            // Whole words first, so a short find ("we") can't rewrite the
-            // inside of a longer word ("week"). Bare substrings only when no
-            // whole word matches: a partial-word find, or a script written
-            // without spaces.
-            let attempts: [(wholeWord: Bool, options: NSRegularExpression.Options)] = [
-                (true, []), (true, .caseInsensitive), (false, []), (false, .caseInsensitive),
-            ]
-            var result = selection
-            var anyApplied = false
-            for span in plan.edits {
-                guard !span.find.isEmpty else { continue }
-                for attempt in attempts {
-                    if let replaced = replacing(
-                        span.find, with: span.replace, in: result,
-                        wholeWord: attempt.wholeWord, options: attempt.options)
-                    {
-                        result = replaced
-                        anyApplied = true
-                        break
-                    }
+            // Every span is matched against the passage as selected, and all
+            // are replaced in one pass, so a swap (John → Sarah, Sarah → John)
+            // can't turn both names into one.
+            var edits: [(range: NSRange, replacement: String)] = []
+            for span in plan.edits where !span.find.isEmpty {
+                if deletesMarksForText(span, instruction: instruction) {
+                    log.info("Voice edit rejected: it deletes punctuation for a text instruction.")
+                    throw Failure.interpretationFailed
+                }
+                for range in occurrences(of: span.find, in: selection, instruction: instruction)
+                where !edits.contains(where: { NSIntersectionRange($0.range, range).length > 0 }) {
+                    edits.append((range, span.replace))
                 }
             }
             // No span matched — the model hallucinated the find text or ASR
             // garbled it. Keep the selection rather than write nothing useful.
-            guard anyApplied else { throw Failure.interpretationFailed }
-            return result
+            guard !edits.isEmpty else { throw Failure.interpretationFailed }
+            return applying(edits.sorted { $0.range.location < $1.range.location }, to: selection)
         }
     }
 
-    // Every occurrence of `find` replaced, or nil when there is none. A
-    // whole-word match has no letter or digit directly beside it.
-    private static func replacing(
-        _ find: String, with replacement: String, in text: String,
-        wholeWord: Bool, options: NSRegularExpression.Options
-    ) -> String? {
+    // Where `find` occurs: whole words first, so a short find ("we") can't
+    // rewrite the inside of a longer word ("week"), then bare substrings, for
+    // a partial-word find or a script written without spaces. A whole-word
+    // match has no letter or digit directly beside it. Every occurrence,
+    // unless there are several and the instruction picks one ("the first
+    // comma") without saying every.
+    private static func occurrences(of find: String, in text: String, instruction: String) -> [NSRange] {
         func isWordCharacter(_ c: Character?) -> Bool { c.map { $0.isLetter || $0.isNumber } ?? false }
-        var pattern = NSRegularExpression.escapedPattern(for: find)
-        if wholeWord, isWordCharacter(find.first) { pattern = #"(?<![\p{L}\p{N}])"# + pattern }
-        if wholeWord, isWordCharacter(find.last) { pattern += #"(?![\p{L}\p{N}])"# }
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
-        let range = NSRange(text.startIndex..., in: text)
-        guard regex.firstMatch(in: text, range: range) != nil else { return nil }
-        return regex.stringByReplacingMatches(
-            in: text, range: range, withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
+        let attempts: [(wholeWord: Bool, options: NSRegularExpression.Options)] = [
+            (true, []), (true, .caseInsensitive), (false, []), (false, .caseInsensitive),
+        ]
+        for attempt in attempts {
+            var pattern = NSRegularExpression.escapedPattern(for: find)
+            if attempt.wholeWord, isWordCharacter(find.first) { pattern = #"(?<![\p{L}\p{N}])"# + pattern }
+            if attempt.wholeWord, isWordCharacter(find.last) { pattern += #"(?![\p{L}\p{N}])"# }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: attempt.options) else { continue }
+            let ranges = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).map(\.range)
+            guard !ranges.isEmpty else { continue }
+            if ranges.count > 1, let pick = ordinal(in: instruction, find: find, count: ranges.count) {
+                return [ranges[pick]]
+            }
+            return ranges
+        }
+        return []
+    }
+
+    // The occurrence an instruction names: "first" is index 0, "last" the
+    // final one. nil when it names none, says every, counts past the end, or
+    // the word is part of the text to change ("change last to final").
+    private static func ordinal(in instruction: String, find: String, count: Int) -> Int? {
+        let every = #"\b(every|all|each|everywhere|throughout|both)\b"#
+        guard instruction.range(of: every, options: [.regularExpression, .caseInsensitive]) == nil,
+            let match = instruction.range(
+                of: #"\b(first|second|third|fourth|fifth|last|final)\b"#,
+                options: [.regularExpression, .caseInsensitive])
+        else { return nil }
+        let order = ["first", "second", "third", "fourth", "fifth"]
+        let word = instruction[match].lowercased()
+        guard !find.localizedCaseInsensitiveContains(word) else { return nil }
+        let index = order.firstIndex(of: word) ?? count - 1
+        return index < count ? index : nil
+    }
+
+    // Apple's model answers "delete the last sentence" by deleting every "."
+    // in it. A span that only deletes marks, for an instruction about text
+    // that names no mark, is a misread, not an edit.
+    private static func deletesMarksForText(_ span: VoiceEditPlan.Span, instruction: String) -> Bool {
+        let marks = CharacterSet(charactersIn: ".,;:!?…")
+        guard span.replace.isEmpty, span.find.unicodeScalars.allSatisfy(marks.contains) else { return false }
+        let namesText = #"\b(sentences?|words?|lines?|paragraphs?|phrases?|clauses?)\b"#
+        let namesMark =
+            #"\b(punctuation|periods?|full stops?|dots?|commas?|colons?|semicolons?|exclamation|question marks?|ellipsis|marks?)\b"#
+        return instruction.range(of: namesText, options: [.regularExpression, .caseInsensitive]) != nil
+            && instruction.range(of: namesMark, options: [.regularExpression, .caseInsensitive]) == nil
+    }
+
+    // `edits` in order and not overlapping. Each joint is tidied after: a
+    // deleted word can leave "looks  good", "definitely, , totally" or "is ."
+    // behind, and a comma swapped for a dash comes back as "team- the".
+    private static func applying(_ edits: [(range: NSRange, replacement: String)], to selection: String) -> String {
+        let source = selection as NSString
+        let result = NSMutableString()
+        var joints: [(location: Int, replacement: String, find: String)] = []
+        var cursor = 0
+        for edit in edits {
+            result.append(source.substring(with: NSRange(location: cursor, length: edit.range.location - cursor)))
+            joints.append((result.length, edit.replacement, source.substring(with: edit.range)))
+            result.append(edit.replacement)
+            cursor = NSMaxRange(edit.range)
+        }
+        result.append(source.substring(from: cursor))
+        // Back to front, so each tidy leaves the joints before it in place.
+        for joint in joints.reversed() {
+            if joint.replacement.isEmpty {
+                tidyDeletion(in: result, at: joint.location)
+            } else if ["-", "–", "—"].contains(joint.replacement), [",", ";", ":"].contains(joint.find) {
+                spaceDash(in: result, at: joint.location, emDash: joint.replacement == "—")
+            }
+        }
+        return result as String
+    }
+
+    private static func tidyDeletion(in text: NSMutableString, at location: Int) {
+        func char(_ i: Int) -> Character? {
+            guard i >= 0, i < text.length, let scalar = Unicode.Scalar(text.character(at: i)) else { return nil }
+            return Character(scalar)
+        }
+        let marks: Set<Character> = [",", ".", ";", ":", "!", "?"]
+        if char(location - 1) == " ", char(location) == " " {
+            text.deleteCharacters(in: NSRange(location: location, length: 1))
+        }
+        if char(location - 1) == " ", let next = char(location), marks.contains(next) || next.isNewline {
+            text.deleteCharacters(in: NSRange(location: location - 1, length: 1))
+            if let before = char(location - 2), before == next, [",", ";", ":"].contains(before) {
+                text.deleteCharacters(in: NSRange(location: location - 1, length: 1))
+            }
+        }
+    }
+
+    // An em dash closes up ("team—the"); a hyphen or en dash standing in for
+    // one gets a space on each side ("team - the").
+    private static func spaceDash(in text: NSMutableString, at location: Int, emDash: Bool) {
+        func isSpace(_ i: Int) -> Bool {
+            i >= 0 && i < text.length && text.substring(with: NSRange(location: i, length: 1)) == " "
+        }
+        if emDash {
+            if isSpace(location + 1) { text.deleteCharacters(in: NSRange(location: location + 1, length: 1)) }
+            if isSpace(location - 1) { text.deleteCharacters(in: NSRange(location: location - 1, length: 1)) }
+        } else {
+            if location + 1 < text.length, !isSpace(location + 1) { text.insert(" ", at: location + 1) }
+            if location > 0, !isSpace(location - 1) { text.insert(" ", at: location) }
+        }
     }
 
     // MARK: - Deterministic post-processing
@@ -474,8 +596,10 @@ enum EditInterpreter {
         Choose one of two modes:
         - "targeted": the instruction changes specific words or phrases. List \
         each exact substring to find in the passage and what to replace it \
-        with. Keep every find string as short as possible and leave the rest of \
-        the passage alone.
+        with. Keep every find string short, but long enough to match only the \
+        text you mean: if the same text appears more than once, include a \
+        neighbouring word, unless the instruction means every occurrence. Leave \
+        the rest of the passage alone.
         - "holistic": the instruction asks to rephrase, restructure, summarise, \
         change the tone of, or translate the whole passage. Return the full \
         edited passage.
@@ -483,6 +607,11 @@ enum EditInterpreter {
         Prefer "targeted" whenever the instruction names particular words. Use \
         "holistic" only for whole-passage transformations. Never add or remove \
         sentence-ending punctuation the instruction didn't ask for.
+
+        Write words the user dictates exactly as spoken, without turning \
+        phrases like "next year" into dates. Use all capitals only when the \
+        instruction asks for capitals or uppercase: "capitalize friday" gives \
+        "Friday".
         """
 
     private static let formatSpec = """

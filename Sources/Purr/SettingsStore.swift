@@ -176,8 +176,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(summaryBackend.rawValue, forKey: Keys.summaryBackend) }
     }
 
-    @Published var voiceEditBackend: SummaryBackend {
-        didSet { defaults.set(voiceEditBackend.rawValue, forKey: Keys.voiceEditBackend) }
+    // nil until a model is picked: Gemma once it's downloaded, Apple's
+    // model until then (EditInterpreter.prefersGemma).
+    @Published var voiceEditBackend: SummaryBackend? {
+        didSet { defaults.set(voiceEditBackend?.rawValue, forKey: Keys.voiceEditBackend) }
     }
 
     // Empty = unset, resolves to `defaultMeetingsDirectory` (no TCC consent
@@ -250,9 +252,7 @@ final class SettingsStore: ObservableObject {
         let storedBackend =
             defaults.string(forKey: Keys.summaryBackend) ?? SummaryBackend.appleFoundation.rawValue
         self.summaryBackend = SummaryBackend(rawValue: storedBackend) ?? .appleFoundation
-        let storedEditBackend =
-            defaults.string(forKey: Keys.voiceEditBackend) ?? SummaryBackend.appleFoundation.rawValue
-        self.voiceEditBackend = SummaryBackend(rawValue: storedEditBackend) ?? .appleFoundation
+        self.voiceEditBackend = defaults.string(forKey: Keys.voiceEditBackend).flatMap(SummaryBackend.init)
         self.meetingsFolderPath = defaults.string(forKey: Keys.meetingsFolderPath) ?? ""
         if let data = defaults.data(forKey: Keys.dictionary),
             let entries = try? JSONDecoder().decode([DictionaryEntry].self, from: data)
@@ -336,7 +336,7 @@ final class SettingsStore: ObservableObject {
         trimFillers = true
         summarizeMeetings = false
         summaryBackend = .appleFoundation
-        voiceEditBackend = .appleFoundation
+        voiceEditBackend = nil
         meetingsFolderPath = ""
         dictionary = []
         customVoiceCommands = []
