@@ -440,21 +440,33 @@ struct PostProcessor {
     // ------------------------------------------------------------------
 
     private func applyDictionary(_ text: String) -> String {
-        guard !dictionary.isEmpty else { return text }
-        var result = text
-        for entry in dictionary {
-            let escaped = NSRegularExpression.escapedPattern(for: entry.from)
-            let pattern = #"\b"# + escaped + #"\b"#
-            // entry.to is user-typed; escape it so "$1" / "\0" stay literal instead
-            // of becoming back-references that silently mangle the matched text
-            // (e.g. dollar amounts, file paths).
-            let replacement = NSRegularExpression.escapedTemplate(for: entry.to)
-            result = result.replacingOccurrences(
-                of: pattern,
-                with: replacement,
-                options: [.regularExpression, .caseInsensitive]
-            )
+        // Skips a row whose "Heard as" is still empty, and puts the longest
+        // entries first so "Jo Ann" wins over "Jo".
+        let entries =
+            dictionary
+            .map { (from: $0.from.trimmingCharacters(in: .whitespaces), to: $0.to) }
+            .filter { !$0.from.isEmpty }
+            .sorted { $0.from.count > $1.from.count }
+        guard !entries.isEmpty else { return text }
+        // One pass, so a replacement is never rewritten by a later entry, with
+        // one group per entry to tell which matched. A word character on either
+        // side blocks a match; unlike \b, that also works for entries that start
+        // or end with a symbol, like "C++" and ".NET". The last lookahead leaves
+        // "n't" contractions alone, so an entry for "Don" doesn't touch "don't".
+        let alternatives = entries.map { "(" + NSRegularExpression.escapedPattern(for: $0.from) + ")" }
+        let pattern = #"(?<!\w)(?:"# + alternatives.joined(separator: "|") + #")(?!\w)(?!['’‘]t\b)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return text
         }
-        return result
+        // The replacement goes in as typed, so "$1" or "\0" stay literal.
+        let result = NSMutableString(string: text)
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: result.length))
+        for match in matches.reversed() {
+            guard let k = entries.indices.first(where: { match.range(at: $0 + 1).location != NSNotFound }) else {
+                continue
+            }
+            result.replaceCharacters(in: match.range, with: entries[k].to)
+        }
+        return result as String
     }
 }
