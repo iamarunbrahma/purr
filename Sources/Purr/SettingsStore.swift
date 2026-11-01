@@ -26,7 +26,7 @@ final class SettingsStore: ObservableObject {
         static let onboardingStep = "onboarding.step"
         static let engine = "stt.engine"
         static let translateToEnglish = "stt.translateToEnglish"
-        static let translationSourceLanguage = "stt.translationSourceLanguage"
+        static let spokenLanguage = "stt.spokenLanguage"
         static let smartTyping = "ui.smartTyping"
         static let voiceCommands = "ui.voiceCommands"
         static let dictionary = "post.dictionary"
@@ -138,10 +138,11 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(translateToEnglish, forKey: Keys.translateToEnglish) }
     }
 
-    // Empty = auto-detect. Pinning skips Whisper's unreliable-on-short-clips
-    // audio detection. Consulted only when translateToEnglish is on.
-    @Published var translationSourceLanguage: String {
-        didSet { defaults.set(translationSourceLanguage, forKey: Keys.translationSourceLanguage) }
+    // The language Whisper listens for, also the source when translating.
+    // Empty = auto-detect, which misreads short clips and can write English
+    // speech in another language. The English-only models ignore it.
+    @Published var spokenLanguage: String {
+        didSet { defaults.set(spokenLanguage, forKey: Keys.spokenLanguage) }
     }
 
     // Empty string = English (Parakeet v2); otherwise a ParakeetLanguage code
@@ -240,7 +241,7 @@ final class SettingsStore: ObservableObject {
         let storedEngine = defaults.string(forKey: Keys.engine) ?? Engine.parakeet.rawValue
         self.engine = Engine(rawValue: storedEngine) ?? .parakeet
         self.translateToEnglish = defaults.object(forKey: Keys.translateToEnglish) as? Bool ?? false
-        self.translationSourceLanguage = defaults.string(forKey: Keys.translationSourceLanguage) ?? ""
+        self.spokenLanguage = defaults.string(forKey: Keys.spokenLanguage) ?? ""
         self.meetingLanguage = defaults.string(forKey: Keys.meetingLanguage) ?? ""
         self.smartTyping = defaults.object(forKey: Keys.smartTyping) as? Bool ?? false
         self.voiceCommands = defaults.object(forKey: Keys.voiceCommands) as? Bool ?? true
@@ -327,7 +328,7 @@ final class SettingsStore: ObservableObject {
         engine = .parakeet
         modelName = ModelManager.defaultModel
         translateToEnglish = false
-        translationSourceLanguage = ""
+        spokenLanguage = ""
         meetingLanguage = ""
         autoPaste = true
         smartTyping = false

@@ -303,7 +303,18 @@ private struct EnginePane: View {
             }
 
             if settings.engine == .whisper {
-                Section("Translation") {
+                Section("Language") {
+                    if ModelManager.isMultilingual(settings.modelName) {
+                        LanguageRow(
+                            title: "Spoken language",
+                            value: WhisperLanguage.named(settings.spokenLanguage).name
+                        ) { pickingLanguage = true }
+                        .help(
+                            "Auto-detect can misread short clips, or write English in another language. Pick yours for reliable results."
+                        )
+                    } else {
+                        LabeledContent("Spoken language", value: "English")
+                    }
                     Toggle(isOn: $settings.translateToEnglish) {
                         Text("Translate to English")
                         if !selectedModelSupportsTranslation {
@@ -312,13 +323,6 @@ private struct EnginePane: View {
                     }
                     .disabled(!selectedModelSupportsTranslation)
                     .help("Speak any language; Whisper writes the transcript in English.")
-                    if selectedModelSupportsTranslation, settings.translateToEnglish {
-                        LanguageRow(
-                            title: "Spoken language",
-                            value: WhisperLanguage.named(settings.translationSourceLanguage).name
-                        ) { pickingLanguage = true }
-                        .help("Auto-detect can misread short clips. Pick the language for reliable results.")
-                    }
                 }
             }
         }
@@ -326,7 +330,7 @@ private struct EnginePane: View {
         .sheet(isPresented: $pickingLanguage) {
             LanguagePickerSheet(
                 title: "Spoken Language",
-                selection: $settings.translationSourceLanguage,
+                selection: $settings.spokenLanguage,
                 allLanguages: WhisperLanguage.all,
                 matching: WhisperLanguage.matching,
                 onClose: { pickingLanguage = false }

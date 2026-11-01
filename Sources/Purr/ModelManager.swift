@@ -85,6 +85,11 @@ enum ModelManager {
         curatedModels.first { $0.id == modelName }?.supportsTranslation ?? false
     }
 
+    // The .en builds only know English, so there's no language to pick.
+    static func isMultilingual(_ modelName: String) -> Bool {
+        !modelName.hasSuffix(".en")
+    }
+
     static var modelsDirectory: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
             0]

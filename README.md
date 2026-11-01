@@ -85,7 +85,7 @@ No. Recording, transcription, summaries and Voice Edit all run on your Mac. Purr
 <details>
 <summary><strong>Which languages does it support?</strong></summary>
 
-Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** for about 100 other languages, and optionally translate them into English. Meetings work in English and 27 more languages (pick one in **Settings > Meetings**), and the summary is written in the meeting's language.
+Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** for about 100 other languages, pick the one you speak (auto-detect can misread short clips), and optionally translate it into English. Meetings work in English and 27 more languages (pick one in **Settings > Meetings**), and the summary is written in the meeting's language.
 
 </details>
 
