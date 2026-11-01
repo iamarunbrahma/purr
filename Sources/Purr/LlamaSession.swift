@@ -48,6 +48,9 @@ final class LlamaSession {
         var repetitionPenalty: Float = 1.1
         var repetitionContextSize: Int32 = 64
         var nBatch: UInt32 = 512
+        // Called with the reply's complete lines each time one ends; true
+        // stops the reply.
+        var stopAfterLine: (@Sendable (String) -> Bool)?
     }
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "llama")
@@ -163,15 +166,16 @@ final class LlamaSession {
         //    its own, and the cells from the first wrong guess on are dropped.
         //    Every kept token is still sampled in order, so guessing changes
         //    the speed, not what the sampler can produce. Stops on EOG (Gemma 4
-        //    emits <turn|>), the cap, or cancellation. Bytes rather than
-        //    Strings accumulate because a character outside the vocabulary
-        //    arrives as several byte tokens, each one an incomplete UTF-8
-        //    sequence on its own.
+        //    emits <turn|>), the cap, stopAfterLine, or cancellation. Bytes
+        //    rather than Strings accumulate because a character outside the
+        //    vocabulary arrives as several byte tokens, each one an incomplete
+        //    UTF-8 sequence on its own.
         var output: [UInt8] = []
         var history = tokens
         var pos = Int32(tokens.count)
         var generated = 0
         var decodes = 0
+        var checkedBytes = 0
         let maxTokens = parameters.maxTokens
         let memory = llama_get_memory(context)
 
@@ -211,6 +215,12 @@ final class LlamaSession {
             // did, stale cells would sit where the next token goes.
             if kept < guesses.count, !llama_memory_seq_rm(memory, 0, pos, -1) {
                 throw LlamaError.decodeFailed(code: -1)
+            }
+            if let stopAfterLine = parameters.stopAfterLine,
+                let newline = output[checkedBytes...].lastIndex(of: UInt8(ascii: "\n"))
+            {
+                checkedBytes = newline + 1
+                if stopAfterLine(String(decoding: output[...newline], as: UTF8.self)) { break }
             }
         }
         log.info("Llama reply: \(generated, privacy: .public) tokens in \(decodes, privacy: .public) decodes")

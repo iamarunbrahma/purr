@@ -269,14 +269,21 @@ final class MeetingSummarizer {
         #if canImport(FoundationModels)
         let pieces = Self.pieces(of: transcript, maxChars: Self.applePieceChars)
         var parts: [MeetingMinutes] = []
+        var blocked: LanguageModelSession.GenerationError?
         for piece in pieces {
             parts += try await appleMinutes(
-                transcript: piece, roster: roster, isExcerpt: pieces.count > 1, depth: 0)
+                transcript: piece, roster: roster, isExcerpt: pieces.count > 1, depth: 0, blocked: &blocked)
         }
+        // With nothing left to summarize, summarize() reports the refusal.
+        if parts.isEmpty, let blocked { throw blocked }
         guard let first = parts.first else { throw SummarizerError.emptyResponse }
-        guard parts.count > 1 else { return Self.renderMarkdown(Self.merged(parts, tldr: first.tldr)) }
+        let note =
+            blocked == nil
+            ? ""
+            : "_Apple Intelligence wouldn't summarize part of this meeting, so that part is missing here. Choose Gemma in Settings → Meetings to summarize meetings like this in full._\n\n"
+        guard parts.count > 1 else { return note + Self.renderMarkdown(Self.merged(parts, tldr: first.tldr)) }
         log.info("Apple FM summarized the transcript in \(parts.count, privacy: .public) pieces.")
-        return Self.renderMarkdown(await combine(parts))
+        return note + Self.renderMarkdown(await combine(parts))
         #else
         throw SummarizerError.backendUnavailable
         #endif
@@ -284,10 +291,13 @@ final class MeetingSummarizer {
 
     #if canImport(FoundationModels)
     // A piece that still overflows - denser scripts run closer to a token per
-    // character - is split in half until it fits.
+    // character - is split in half until it fits. Without Gemma to redo the
+    // meeting, a piece Apple FM refuses is split too, down to quarters, and
+    // what it still refuses is left out, its error kept in `blocked`.
     @available(macOS 26.0, *)
     private func appleMinutes(
-        transcript: String, roster: [String], isExcerpt: Bool, depth: Int
+        transcript: String, roster: [String], isExcerpt: Bool, depth: Int,
+        blocked: inout LanguageModelSession.GenerationError?
     ) async throws -> [MeetingMinutes] {
         let session = LanguageModelSession(instructions: { Instructions(appleInstructions) })
         let prompt = appleUserPrompt(transcript: transcript, roster: roster, isExcerpt: isExcerpt)
@@ -305,16 +315,28 @@ final class MeetingSummarizer {
             )
             return [response.content]
         } catch let error as LanguageModelSession.GenerationError {
-            guard case .exceededContextWindowSize = error, depth < 3 else { throw error }
+            let refused: Bool
+            switch error {
+            case .exceededContextWindowSize: refused = false
+            case .refusal, .guardrailViolation: refused = true
+            default: throw error
+            }
+            // With Gemma installed, summarize() has it redo the whole meeting.
+            if refused, LLMModelManager.isInstalled() { throw error }
             let halves = Self.pieces(of: transcript, maxChars: transcript.count / 2 + 1)
-            guard halves.count > 1 else { throw error }
+            guard depth < (refused ? 2 : 3), halves.count > 1 else {
+                guard refused else { throw error }
+                log.info("Apple FM refused a \(transcript.count, privacy: .public)-char piece; leaving it out.")
+                blocked = error
+                return []
+            }
             log.info(
-                "Apple FM context exceeded on a \(transcript.count, privacy: .public)-char piece; splitting it in \(halves.count, privacy: .public)."
+                "Apple FM \(refused ? "refused" : "context exceeded on", privacy: .public) a \(transcript.count, privacy: .public)-char piece; splitting it in \(halves.count, privacy: .public)."
             )
             var parts: [MeetingMinutes] = []
             for half in halves {
                 parts += try await appleMinutes(
-                    transcript: half, roster: roster, isExcerpt: true, depth: depth + 1)
+                    transcript: half, roster: roster, isExcerpt: true, depth: depth + 1, blocked: &blocked)
             }
             return parts
         }
@@ -593,9 +615,21 @@ final class MeetingSummarizer {
         // A busy 24K-char piece needs ~2,000 tokens of minutes. 1.0 turns the
         // repetition penalty off: minutes repeat their bullets and fields, and
         // the penalty made Gemma drop due dates and decisions.
-        let parameters = LlamaSession.Parameters(maxTokens: 4096, repetitionPenalty: 1.0)
+        let parameters = LlamaSession.Parameters(
+            maxTokens: 4096, repetitionPenalty: 1.0, stopAfterLine: { Self.cutAtLoop($0) != nil })
         do {
-            return [Self.uncheckActionItems(try await generateWithWatchdog(prompt: prompt, parameters: parameters))]
+            var minutes = try await generateWithWatchdog(prompt: prompt, parameters: parameters)
+            if let cut = Self.cutAtLoop(minutes) {
+                // The penalty makes another loop unlikely, at the cost of the
+                // odd due date, so the retry turns it on. If it loops anyway,
+                // the try that got further is kept.
+                log.info("Gemma repeated a bullet; summarizing the piece again.")
+                var retryParameters = parameters
+                retryParameters.repetitionPenalty = 1.1
+                let retry = try await generateWithWatchdog(prompt: prompt, parameters: retryParameters)
+                minutes = Self.cutAtLoop(retry).map { $0.count > cut.count ? $0 : cut } ?? retry
+            }
+            return [Self.uncheckActionItems(minutes)]
         } catch LlamaSession.LlamaError.promptTooLong(let tokens, let budget) {
             let halves = Self.pieces(of: transcript, maxChars: transcript.count / 2 + 1)
             guard depth < 3, halves.count > 1 else {
@@ -680,6 +714,28 @@ final class MeetingSummarizer {
         var text = item.lowercased()
         if isActionItem, let fields = text.range(of: "(owner:") { text = String(text[..<fields.lowerBound]) }
         return text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    // Gemma can get stuck writing one bullet, or a few in turn, until the
+    // token cap, and the piece's later sections never come. Returns the
+    // minutes up to the second copy of the first bullet written three times,
+    // or nil if none was. "_None._" placeholders don't count.
+    nonisolated private static func cutAtLoop(_ minutes: String) -> String? {
+        let lines = minutes.components(separatedBy: "\n")
+        var copies: [String: Int] = [:]
+        var secondCopy: [String: Int] = [:]
+        for (index, line) in lines.enumerated() {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            // A marker and a space, so "---" rules and "**bold**" lines aren't bullets.
+            guard ["- ", "* ", "+ "].contains(where: { text.hasPrefix($0) }),
+                text.dropFirst(2).trimmingCharacters(in: .whitespaces) != "_None._"
+            else { continue }
+            let key = text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            copies[key, default: 0] += 1
+            if copies[key] == 2 { secondCopy[key] = index }
+            if copies[key] == 3, let cut = secondCopy[key] { return lines[..<cut].joined(separator: "\n") }
+        }
+        return nil
     }
 
     // Gemma 4 E2B tends to tick its action-item boxes ("- [x]"), but nothing
