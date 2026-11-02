@@ -1,1 +1,0 @@
-The logs are shipped to Splunk. 

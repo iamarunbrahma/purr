@@ -1,1 +1,0 @@
-Kafka keeps the events in order

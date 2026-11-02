@@ -1,1 +1,0 @@
-The front end uses Nuxt NP

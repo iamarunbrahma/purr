@@ -1,1 +1,0 @@
-Run npm install - - save dev type script, then open the readme.md file. 

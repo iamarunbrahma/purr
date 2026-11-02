@@ -1,9 +1,0 @@
-id	start	command	expect
-x1	The meeting is on Tuesday at 3 pm.	Change Tuesday to Thursday.	The meeting is on Thursday at 3 pm.
-x2	hey can you send me the report by friday thanks	Make this more formal.	(formal rewrite asking for the report by Friday)
-x3	We shipped the update last week and users like it.	Translate this to Spanish.	(Spanish translation)
-x4	The launch went well. Sales were strong. The team was happy.	Make it one sentence.	(one sentence, same facts)
-x5	I think maybe we should probably consider moving the deadline to next month if that is possible.	Make it shorter.	(shorter, same meaning)
-x6	send the deck to anna and raj before the review	Capitalize the names.	send the deck to Anna and Raj before the review
-x7	Buy milk, eggs, bread and coffee.	Turn this into a bulleted list.	(four bullets)
-x8	The quick fix worked.	End it with an exclamation mark.	The quick fix worked!

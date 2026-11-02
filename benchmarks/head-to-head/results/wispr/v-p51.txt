@@ -1,1 +1,0 @@
-Hono is a tiny web framework. 

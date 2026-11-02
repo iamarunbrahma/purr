@@ -52,14 +52,6 @@ Purr, Wispr Flow (free plan, runs in the cloud) and Superwhisper (free plan, run
 | Names and terms spelled right (same list in each app) | 72.6% | **93.5%** | 51.6% |
 | Works offline | **yes** | no | **yes** |
 
-Purr's other modes were tested on their own:
-
-- **Smart Typing** (types while you talk) had an 8.0% WER on the same everyday recordings, against 3.8% with Dictate.
-- **Voice Edit** got 8 of 8 spoken edits right, such as "Change Tuesday to Thursday" and "Translate this to Spanish".
-- **Meetings**: on 16 recorded meetings from the public AMI set, Purr labeled who said what with a 9.6% error rate and found the right number of speakers in 15. Its notes for a 55-minute meeting kept 36 of the 38 action items.
-
-Wispr Flow is still ahead on rare names, other languages and, by a little, everyday speech. [Benchmarks](benchmarks/) has every result, Purr's scores on public test sets, and the scripts to run it yourself.
-
 ## Install
 
 Download `Purr.dmg` from the [latest release](https://github.com/iamarunbrahma/purr/releases/latest), open it and drag Purr into Applications.

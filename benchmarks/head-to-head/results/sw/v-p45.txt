@@ -1,1 +1,0 @@
-Gradle took 10 minutes to build

@@ -1,1 +1,0 @@
-Cache the session and redisk for an hour

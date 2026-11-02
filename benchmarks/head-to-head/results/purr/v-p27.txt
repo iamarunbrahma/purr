@@ -1,1 +1,0 @@
-Search runs on Elastics Arc with Kibana dashboards. 

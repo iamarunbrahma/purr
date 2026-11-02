@@ -1,1 +1,0 @@
-Cache the session in Redis for an hour 

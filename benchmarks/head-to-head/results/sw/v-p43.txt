@@ -1,1 +1,0 @@
-The desktop app is built on Torii

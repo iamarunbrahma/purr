@@ -1,1 +1,0 @@
-The API is built with FastAPI and Pydantic. 
