@@ -7,8 +7,8 @@ import Sparkle
 // signature against SUPublicEDKey and its Developer ID against this app's,
 // then replaces Purr and relaunches it.
 //
-// The first time Purr starts after setup, Sparkle asks whether to check
-// automatically, then checks once a day. For a menu bar app it would put a
+// The first time Purr starts after setup, it asks whether to check
+// automatically, and Sparkle then checks once a day. For a menu bar app it would put a
 // daily pop-up behind other windows, except within a few seconds of launch,
 // so an update found later marks the menu bar icon and menu instead
 // (Sparkle's gentle reminders) until the user opens it.
@@ -49,10 +49,34 @@ final class Updater: NSObject, ObservableObject {
 }
 
 extension Updater: SPUUpdaterDelegate {
-    // Sparkle would ask on the second launch, which lands on top of setup
-    // when someone quits partway through it. Called once, as Sparkle starts.
+    // Called once, as Sparkle starts, while the question is still unanswered.
+    // Purr asks itself, since Sparkle's prompt repeats its title in a second
+    // line, and only after setup: Sparkle would ask on the second launch,
+    // which lands on top of setup when someone quits partway through it.
     func updaterShouldPromptForPermissionToCheck(forUpdates updater: SPUUpdater) -> Bool {
-        SettingsStore.shared.onboardingDone
+        if SettingsStore.shared.onboardingDone {
+            Task { self.askToCheckAutomatically() }
+        }
+        return false
+    }
+
+    private func askToCheckAutomatically() {
+        let alert = NSAlert()
+        alert.messageText = "Check for updates automatically?"
+        alert.addButton(withTitle: "Check Automatically")
+        alert.addButton(withTitle: "Don't Check").keyEquivalent = "\u{1b}"
+        let autoInstall = NSButton(
+            checkboxWithTitle: "Automatically download and install updates", target: nil, action: nil)
+        alert.accessoryView = autoInstall
+        NSApp.activate(ignoringOtherApps: true)
+        // Just after launch, runModal alone leaves the alert unfocused behind
+        // the front app's focus. Showing its window first brings it forward.
+        alert.layout()
+        alert.window.center()
+        alert.window.makeKeyAndOrderFront(nil)
+        let checks = alert.runModal() == .alertFirstButtonReturn
+        controller.updater.automaticallyChecksForUpdates = checks
+        controller.updater.automaticallyDownloadsUpdates = checks && autoInstall.state == .on
     }
 
     func updater(
