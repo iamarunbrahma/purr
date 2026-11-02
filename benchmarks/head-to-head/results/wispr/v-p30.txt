@@ -1,0 +1,1 @@
+Styled the page with Tailwind. 

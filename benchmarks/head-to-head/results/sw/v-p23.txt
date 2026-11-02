@@ -1,0 +1,1 @@
+The Ansible Playbook failed on two posts

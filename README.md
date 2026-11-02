@@ -39,6 +39,21 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
   <img src="Resources/screenshots/settings-models.png" width="49%" alt="Models settings">
 </p>
 
+## Benchmarks
+
+The same clips were played into Purr, Wispr Flow (free plan, cloud) and Superwhisper (free plan, local Whisper Turbo), with the same 62 custom words loaded in each:
+
+| | Purr | Wispr Flow | Superwhisper |
+|---|---|---|---|
+| Time from key release to text | **0.22 s** | 0.63 s | 1.30 s |
+| Word errors on hard audio (noise, accents, quiet speech) | **4.0%** | **4.0%** | 10.0% |
+| Word errors on a 5-minute dictation | **1.7%** | not run | 5.0% |
+| Sound-alike phrases wrongly swapped into a custom word | **2 of 16** | 4 of 16 | 7 of 16 |
+| Custom words spelled exactly right | 72.6% | **93.5%** | 51.6% |
+| Works offline | **yes** | no | **yes** |
+
+Wispr Flow is still ahead on rare names and other languages. [Benchmarks](benchmarks/) has every result, Purr's scores on public test sets, and the scripts to run it yourself.
+
 ## Install
 
 Download `Purr.dmg` from the [latest release](https://github.com/iamarunbrahma/purr/releases/latest), open it and drag Purr into Applications.

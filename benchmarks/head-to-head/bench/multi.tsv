@@ -1,0 +1,25 @@
+id	block	file	ref	terms	note
+m01	multi	m01.wav	Mañana tenemos una reunión con el equipo de ventas a las diez.	es	Mónica
+m02	multi	m02.wav	Por favor, envíame el informe antes del viernes.	es	Mónica
+m03	multi	m03.wav	Je vais envoyer le rapport à toute l'équipe ce soir.	fr	Thomas
+m04	multi	m04.wav	Pouvez-vous confirmer la date de la prochaine réunion ?	fr	Thomas
+m05	multi	m05.wav	Wir müssen das Budget für das nächste Quartal noch einmal prüfen.	de	Anna
+m06	multi	m06.wav	Ich komme heute etwas später ins Büro.	de	Anna
+m07	multi	m07.wav	Ho già prenotato il ristorante per sabato sera.	it	Alice
+m08	multi	m08.wav	Il cliente vuole una risposta entro domani mattina.	it	Alice
+m09	multi	m09.wav	Precisamos terminar a apresentação antes da reunião de amanhã.	pt	Luciana
+m10	multi	m10.wav	Você pode me ligar depois do almoço?	pt	Luciana
+m11	multi	m11.wav	Kun je de presentatie vandaag nog naar mij sturen?	nl	Xander
+m12	multi	m12.wav	De nieuwe versie van de app is klaar voor de test.	nl	Xander
+m13	multi	m13.wav	Пожалуйста, отправьте мне отчёт до конца недели.	ru	Milena
+m14	multi	m14.wav	Встреча перенесена на четверг.	ru	Milena
+m15	multi	m15.wav	कृपया कल सुबह तक रिपोर्ट भेज दीजिए।	hi	Lekha
+m16	multi	m16.wav	हमारी अगली मीटिंग सोमवार को होगी।	hi	Lekha
+m17	multi	m17.wav	明日の会議は午後から始まります。	ja	Kyoko
+m18	multi	m18.wav	資料を今日中に送ってください。	ja	Kyoko
+m19	multi	m19.wav	请在周五之前把报告发给我。	zh	Tingting
+m20	multi	m20.wav	我们下周一开会讨论这个问题。	zh	Tingting
+m21	multi	m21.wav	내일 오전에 회의가 있습니다.	ko	Yuna
+m22	multi	m22.wav	보고서를 오늘까지 보내 주세요.	ko	Yuna
+m23	multi	m23.wav	من فضلك أرسل لي التقرير قبل نهاية الأسبوع.	ar	Majed
+m24	multi	m24.wav	سيكون الاجتماع القادم يوم الاثنين.	ar	Majed

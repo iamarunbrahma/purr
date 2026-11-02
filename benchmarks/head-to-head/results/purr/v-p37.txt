@@ -1,0 +1,1 @@
+We use Deepgram for transcription. 
