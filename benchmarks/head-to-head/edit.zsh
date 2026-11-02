@@ -44,7 +44,7 @@ tail -n +2 $B/edit/cases.tsv | while IFS=$'\t' read -r id start cmd expect; do
   ready || exit 1
   set_doc "$start"; print -rn -- "$start" > $B/edit/base.txt; /bin/sleep 0.4
   $B/tools/key 0 cmd tap; synth; /bin/sleep 0.4      # select all
-  $B/tools/poll2 $DOC 40 3 $TXT/$id.txt $B/edit/base.txt > $B/poll.out &
+  $B/tools/poll $DOC 40 3 $TXT/$id.txt $B/edit/base.txt > $B/poll.out &
   pid=$!
   /bin/sleep 0.6
   down; synth; /bin/sleep 0.5

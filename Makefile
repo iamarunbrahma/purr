@@ -7,7 +7,6 @@
 # OS will route TCC prompts to it.
 
 APP_NAME      := Purr
-BUNDLE_ID     := com.arunbrahma.purr
 CONFIG        := release
 BUILD_DIR     := .build
 APP_DIR       := dist/$(APP_NAME).app
