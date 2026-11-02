@@ -68,7 +68,8 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    // Lets SwiftUI (the updater UI) disable destructive actions mid-recording.
+    // False mid-recording or transcribing: quitting asks first, and an update
+    // holds its relaunch until this turns true.
     @Published private(set) var safeToQuit: Bool = true
 
     @Published private(set) var menuBarStatus: MenuBarStatus = .idle

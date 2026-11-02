@@ -38,5 +38,11 @@
     <string>Purr records your voice locally to transcribe it into text. Audio never leaves your Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Purr captures system audio so meeting recordings include the remote participants. Audio is transcribed locally and never leaves your Mac.</string>
+    <!-- Sparkle reads the appcast from the latest GitHub release and installs
+         only updates signed with the private half of SUPublicEDKey. -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/iamarunbrahma/purr/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>hWFrNYdk51BteCnsr3R6uME95/JXyp6DS+U7zr3GUZk=</string>
 </dict>
 </plist>

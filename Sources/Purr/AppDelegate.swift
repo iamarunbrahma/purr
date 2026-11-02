@@ -11,12 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowStyle: AnyCancellable?
     private var modelStore: ModelStore?
     private var aboutWindow: NSWindow?
-    private let updater = Updater()
+    private var updater: Updater!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         coordinator = AppCoordinator()
+        updater = Updater(coordinator: coordinator)
         menuBar = MenuBarController(
             coordinator: coordinator,
+            updater: updater,
             onShowAbout: { [weak self] in self?.showAbout() },
             onShowSettings: { [weak self] in self?.showSettings() },
             onShowPermissions: { [weak self] in
@@ -86,20 +88,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAbout() {
-        Task { await updater.checkForUpdatesUnlessBusy() }
         if let win = aboutWindow {
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = AboutView(updater: updater, coordinator: coordinator).textSelection(.enabled)
+        let view = AboutView(updater: updater).textSelection(.enabled)
         let host = NSHostingController(rootView: view)
         let win = NSWindow(contentViewController: host)
         win.title = "About Purr"
         win.styleMask = [.titled, .closable]
         // See showSettings.
         win.collectionBehavior = .moveToActiveSpace
-        win.setContentSize(NSSize(width: 380, height: 320))
+        win.setContentSize(NSSize(width: 380, height: 300))
         win.center()
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
@@ -116,7 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let models = ModelStore(coordinator: coordinator)
-        let host = NSHostingController(rootView: SettingsView(coordinator: coordinator, models: models))
+        let host = NSHostingController(
+            rootView: SettingsView(coordinator: coordinator, models: models, updater: updater))
         // Sized by the window, so it can be resized past the view's minimum.
         host.sizingOptions = [.minSize]
         let win = NSWindow(contentViewController: host)

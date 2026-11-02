@@ -9,6 +9,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var coordinator: AppCoordinator
     @ObservedObject var models: ModelStore
+    let updater: Updater
     @ObservedObject private var settings = SettingsStore.shared
     @State private var pane: SettingsPane? = .general
 
@@ -26,7 +27,7 @@ struct SettingsView: View {
                     .toolbar(removing: .sidebarToggle)
                 } detail: {
                     switch pane ?? .general {
-                    case .general: GeneralPane(coordinator: coordinator, models: models)
+                    case .general: GeneralPane(coordinator: coordinator, models: models, updater: updater)
                     case .engine: EnginePane(coordinator: coordinator, models: models)
                     case .meetings: MeetingsPane(coordinator: coordinator, models: models)
                     case .voiceEdit: VoiceEditPane(coordinator: coordinator, models: models)
@@ -81,6 +82,7 @@ private struct GeneralPane: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject var coordinator: AppCoordinator
     @ObservedObject var models: ModelStore
+    @ObservedObject var updater: Updater
     @StateObject private var permissions = PermissionsModel()
     // Read as the pane opens (setup skipped, or a switch turned off in System
     // Settings since) and kept for the visit, so each row can show Allowed.
@@ -148,6 +150,14 @@ private struct GeneralPane: View {
                     .help("Drops “um”, “uh” and the filler words you add in Vocabulary.")
                 Toggle("Voice commands", isOn: $settings.voiceCommands)
                     .help("Say “new line”, “comma” or “scratch that”, plus your own commands from Vocabulary.")
+            }
+
+            Section("Updates") {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(get: { updater.checksAutomatically }, set: updater.setChecksAutomatically)
+                )
+                .help("Checks GitHub once a day and shows what's new before anything installs.")
             }
 
             Section {
