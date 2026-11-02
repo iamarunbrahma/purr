@@ -41,18 +41,24 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
 
 ## Benchmarks
 
-The same clips were played into Purr, Wispr Flow (free plan, cloud) and Superwhisper (free plan, local Whisper Turbo), with the same 62 custom words loaded in each:
+Purr, Wispr Flow (free plan, runs in the cloud) and Superwhisper (free plan, runs on the Mac) heard the same recordings in their dictation mode, played into each app as its microphone. Lower is better for time and errors.
 
 | | Purr | Wispr Flow | Superwhisper |
 |---|---|---|---|
 | Time from key release to text | **0.22 s** | 0.63 s | 1.30 s |
-| Word errors on hard audio (noise, accents, quiet speech) | **4.0%** | **4.0%** | 10.0% |
-| Word errors on a 5-minute dictation | **1.7%** | not run | 5.0% |
-| Sound-alike phrases wrongly swapped into a custom word | **2 of 16** | 4 of 16 | 7 of 16 |
-| Custom words spelled exactly right | 72.6% | **93.5%** | 51.6% |
+| Word error rate (WER), everyday speech | 3.8% | **3.4%** | 9.0% |
+| WER, hard audio (noise, accents, quiet speech) | **4.0%** | **4.0%** | 10.0% |
+| WER, in non-English languages | 7.1% | **5.8%** | 12.1% |
+| Names and terms spelled right (same list in each app) | 72.6% | **93.5%** | 51.6% |
 | Works offline | **yes** | no | **yes** |
 
-Wispr Flow is still ahead on rare names and other languages. [Benchmarks](benchmarks/) has every result, Purr's scores on public test sets, and the scripts to run it yourself.
+Purr's other modes were tested on their own:
+
+- **Smart Typing** (types while you talk) had an 8.0% WER on the same everyday recordings, against 3.8% with Dictate.
+- **Voice Edit** got 8 of 8 spoken edits right, such as "Change Tuesday to Thursday" and "Translate this to Spanish".
+- **Meetings**: on 16 recorded meetings from the public AMI set, Purr labeled who said what with a 9.6% error rate and found the right number of speakers in 15. Its notes for a 55-minute meeting kept 36 of the 38 action items.
+
+Wispr Flow is still ahead on rare names, other languages and, by a little, everyday speech. [Benchmarks](benchmarks/) has every result, Purr's scores on public test sets, and the scripts to run it yourself.
 
 ## Install
 
