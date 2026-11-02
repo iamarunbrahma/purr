@@ -7,11 +7,11 @@ import Sparkle
 // signature against SUPublicEDKey and its Developer ID against this app's,
 // then replaces Purr and relaunches it.
 //
-// On the second launch Sparkle asks whether to check automatically, then
-// checks once a day. For a menu bar app it would put a daily pop-up behind
-// other windows, except within a few seconds of launch, so an update found
-// later marks the menu bar icon and menu instead (Sparkle's gentle
-// reminders) until the user opens it.
+// The first time Purr starts after setup, Sparkle asks whether to check
+// automatically, then checks once a day. For a menu bar app it would put a
+// daily pop-up behind other windows, except within a few seconds of launch,
+// so an update found later marks the menu bar icon and menu instead
+// (Sparkle's gentle reminders) until the user opens it.
 //
 // A relaunch waits while Purr is recording or transcribing.
 @MainActor
@@ -49,6 +49,12 @@ final class Updater: NSObject, ObservableObject {
 }
 
 extension Updater: SPUUpdaterDelegate {
+    // Sparkle would ask on the second launch, which lands on top of setup
+    // when someone quits partway through it. Called once, as Sparkle starts.
+    func updaterShouldPromptForPermissionToCheck(forUpdates updater: SPUUpdater) -> Bool {
+        SettingsStore.shared.onboardingDone
+    }
+
     func updater(
         _ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
         untilInvokingBlock installHandler: @escaping () -> Void

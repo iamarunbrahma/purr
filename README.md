@@ -123,7 +123,7 @@ On MacBooks with a notch, menu bar icons can hide behind it when the bar is full
 <details>
 <summary><strong>How do I update Purr?</strong></summary>
 
-On its second launch, Purr asks whether to check for updates automatically. If you say yes, it checks GitHub once a day. You can also click **Check for Updates** in the menu bar or in About at any time, and turn automatic checks on or off in **Settings > General**.
+The first time Purr starts after setup, it asks whether to check for updates automatically. If you say yes, it checks GitHub once a day. You can also click **Check for Updates** in the menu bar or in About at any time, and turn automatic checks on or off in **Settings > General**.
 
 When there's a new version, you see what changed before anything installs. If one turns up while you're working, the menu bar icon gets a dot and the menu shows **Update Available**. Purr checks that each update is signed by its developer before it replaces the app, and it holds the relaunch while it's recording or transcribing.
 
