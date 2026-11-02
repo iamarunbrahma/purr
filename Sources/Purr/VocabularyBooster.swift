@@ -174,7 +174,8 @@ final class VocabularyBooster {
     // or anything failing, dictation goes on without it.
     func apply(to result: ASRResult, samples: [Float]) async -> String {
         let words = Self.terms(SettingsStore.shared.vocabularyWords)
-        guard !words.isEmpty, let timings = result.tokenTimings, !timings.isEmpty else { return result.text }
+        guard !words.isEmpty, let tokens = result.tokenTimings, !tokens.isEmpty else { return result.text }
+        let timings = Self.withoutPunctuation(tokens)
         guard let models else {
             if Self.isInstalled() {
                 startLoading()
@@ -233,6 +234,50 @@ final class VocabularyBooster {
             minSimilarity: max(size.minSimilarity, context.minSimilarity), cbw: size.cbw)
         vocabulary = built
         return built
+    }
+
+    // FluidAudio scores each heard word as written, "cradle." or
+    // "mid-journey", against a listed word without punctuation, and the extra
+    // tokens tipped such words toward the listed one: "in the cradle." became
+    // Gradle. So words go in without leading or trailing punctuation, and a
+    // hyphen splits one in two. The text keeps its punctuation, as swaps are
+    // placed around it.
+    static func withoutPunctuation(_ tokens: [TokenTiming]) -> [TokenTiming] {
+        var words: [[TokenTiming]] = []
+        for token in tokens {
+            if words.isEmpty || isWordBoundary(token.token) {
+                words.append([token])
+            } else {
+                words[words.count - 1].append(token)
+            }
+        }
+        var kept: [TokenTiming] = []
+        for var word in words {
+            while let last = word.last, isPunctuation(last) { word.removeLast() }
+            while let first = word.first, isPunctuation(first) { word.removeFirst() }
+            var startsWord = true
+            for token in word {
+                if ["-", "–", "—"].contains(stripWordBoundaryPrefix(token.token)) {
+                    startsWord = true
+                    continue
+                }
+                kept.append(startsWord && !isWordBoundary(token.token) ? startingWord(token) : token)
+                startsWord = false
+            }
+        }
+        return kept
+    }
+
+    // Apostrophes stay, as in "don't" and "James'".
+    private static func isPunctuation(_ token: TokenTiming) -> Bool {
+        let text = stripWordBoundaryPrefix(token.token)
+        return !text.isEmpty && text.allSatisfy { $0.isPunctuation && $0 != "'" && $0 != "’" }
+    }
+
+    private static func startingWord(_ token: TokenTiming) -> TokenTiming {
+        TokenTiming(
+            token: ASRConstants.sentencePieceWordBoundary + token.token, tokenId: token.tokenId,
+            startTime: token.startTime, endTime: token.endTime, confidence: token.confidence)
     }
 
     // ------------------------------------------------------------------
