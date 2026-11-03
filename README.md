@@ -4,7 +4,7 @@
 
 # Purr
 
-**Hold a key, speak, and your words appear in any app.**<br>
+**Hold a key. Speak. Your words type into any text field - 100% local, on-device**<br>
 Dictation, meeting notes and voice editing that run entirely on your Mac.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
