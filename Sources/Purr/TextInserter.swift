@@ -8,8 +8,9 @@ import os.log
 final class TextInserter {
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "paste")
 
-    // V on a US ANSI keyboard.
+    // V on a US ANSI keyboard, and Left Command.
     private let kVKey: CGKeyCode = 9
+    private let kCommandKey: CGKeyCode = 55
 
     // Restore too early and the target re-pastes the *previous* clipboard
     // contents; 250ms comfortably covers real-world paste latency (~50-100ms).
@@ -122,9 +123,9 @@ final class TextInserter {
     }
 
     // Explicit empty flags, like sendCommandV: a new event otherwise inherits
-    // the session's modifier state, which keeps ⌘ latched after our own
-    // synthetic ⌘V and includes a held Right Option. Space would turn into
-    // ⌘Space (Spotlight) and Backspace into ⌘⌫ / ⌥⌫ (delete line / word).
+    // the session's modifier state, which includes a held Right Option or a
+    // ⌘ the user is holding. Space would turn into ⌘Space (Spotlight) and
+    // Backspace into ⌘⌫ / ⌥⌫ (delete line / word).
     private func postBareKeystroke(_ key: CGKeyCode, source: CGEventSource) {
         for keyDown in [true, false] {
             let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown)
@@ -181,11 +182,25 @@ final class TextInserter {
         }
         // Explicit flags override the session's modifier state, so a Shift
         // held by the user can't turn this into ⇧⌘V ("Paste and Match Style").
+        // V flagged ⌘ with no ⌘ key events leaves macOS thinking ⌘ is still
+        // held until the next real modifier press, so ⌘'s own down and up go
+        // around it. The up restores the flags from before the paste, which
+        // keeps a held Right Option held.
+        let before = CGEventSource.flagsState(.combinedSessionState)
+        postFlagsChanged(kCommandKey, flags: .maskCommand, source: source)
         let down = CGEvent(keyboardEventSource: source, virtualKey: kVKey, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: kVKey, keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
+        postFlagsChanged(kCommandKey, flags: before, source: source)
+    }
+
+    private func postFlagsChanged(_ key: CGKeyCode, flags: CGEventFlags, source: CGEventSource) {
+        let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+        event?.type = .flagsChanged
+        event?.flags = flags
+        event?.post(tap: .cghidEventTap)
     }
 }

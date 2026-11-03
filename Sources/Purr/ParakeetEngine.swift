@@ -9,10 +9,10 @@ import os.log
 // * **Batch / Meeting (English) / Voice-edit** → `AsrManager` with Parakeet
 //   TDT v2 (English-only, word-level timings for the meeting diarizer).
 //   Used for hold-to-talk dictation and offline transcription.
-// * **Meeting (non-English)** → a second `AsrManager` with Parakeet TDT v3
-//   (multilingual). Loaded only when a non-English meeting language is
-//   picked, so English users never pay for the extra download - dictation
-//   and voice-edit always stay on v2.
+// * **Meeting (non-English)** → a second `AsrManager` with Parakeet Ultra
+//   (multilingual, a post-trained Parakeet TDT v3). Loaded only when a
+//   non-English meeting language is picked, so English users never pay for
+//   the extra download - dictation and voice-edit always stay on v2.
 // * **Smart typing (live)** → `StreamingEouAsrManager`, Parakeet EOU at
 //   320ms chunks. Its partial transcript drives the live preview and a pause
 //   ends each utterance, which the batch model re-transcribes before
@@ -34,6 +34,8 @@ final class ParakeetEngine: TranscriptionEngine {
     private var streamingManager: StreamingEouAsrManager?
     private var streamingWarmupTask: Task<Void, Never>?
     let eouDownload = DownloadReporter()
+    // Swaps the user's Words into dictation.
+    let vocabulary = VocabularyBooster()
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "parakeet")
 
     // 320ms: FluidAudio's benchmarks put it at 4.88% WER vs 8.23% at 160ms,
@@ -52,9 +54,33 @@ final class ParakeetEngine: TranscriptionEngine {
         if SettingsStore.shared.smartTyping, Self.eouIsInstalled(), streamingManager == nil,
             streamingWarmupTask == nil
         {
-            streamingWarmupTask = Task { [weak self] in
-                await self?.loadStreamingManager()
+            _ = streamingLoad()
+        }
+        vocabulary.warmup()
+    }
+
+    var isLoaded: Bool { batchManager != nil }
+    var needsDownload: Bool { !Self.batchIsInstalled() }
+    // Its first compile fits in modelLoadTimeout.
+    var needsCompile: Bool { false }
+    var isStreamingLoaded: Bool { streamingManager != nil }
+    var isMeetingModelLoaded: Bool { meetingBatchManager != nil }
+
+    func load() async throws {
+        if batchManager != nil { return }
+        do {
+            if Self.batchIsInstalled() {
+                log.notice("Waiting for Parakeet TDT v2 to load.")
+                try await withTimeout(modelLoadTimeout) { try await self.downloadAndLoadBatchManager() }
+            } else {
+                try await downloadAndLoadBatchManager()
             }
+        } catch is TimedOutError {
+            log.error("Gave up waiting for Parakeet TDT v2 to load. It keeps loading in the background.")
+            throw EngineError.modelLoadTimedOut
+        } catch {
+            log.error("Parakeet TDT v2 failed to load: \(error.localizedDescription, privacy: .public)")
+            throw EngineError.notLoaded
         }
     }
 
@@ -85,16 +111,20 @@ final class ParakeetEngine: TranscriptionEngine {
         let reporter = Self.batchIsInstalled() ? nil : batchDownload
         reporter?.begin()
         defer { reporter?.end() }
+        let started = Date()
+        log.notice("Parakeet TDT v2 loading\(reporter == nil ? "" : ", downloading first", privacy: .public).")
         let models = try await AsrModels.downloadAndLoad(
             to: Self.batchModelDirectory, version: .v2, progressHandler: reporter?.handler)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
         batchManager = manager
-        log.info("Parakeet TDT v2 downloaded and warmed up.")
+        log.notice(
+            "Parakeet TDT v2 loaded in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s."
+        )
     }
 
-    // v3 counterpart to downloadAndLoadBatchManager() - same coalescing-task
+    // Ultra counterpart to downloadAndLoadBatchManager() - same coalescing-task
     // shape, so a manual Settings download and a meeting hitting a
     // non-English language don't race two pulls into the same folder.
     func downloadAndLoadMeetingManager() async throws {
@@ -115,27 +145,32 @@ final class ParakeetEngine: TranscriptionEngine {
         let reporter = Self.meetingModelIsInstalled() ? nil : meetingBatchDownload
         reporter?.begin()
         defer { reporter?.end() }
+        let started = Date()
+        log.notice("Parakeet Ultra loading\(reporter == nil ? "" : ", downloading first", privacy: .public).")
         let models = try await AsrModels.downloadAndLoad(
-            to: Self.meetingModelDirectory, version: .v3, progressHandler: reporter?.handler)
+            to: Self.meetingModelDirectory, version: .ultra, progressHandler: reporter?.handler)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         try Task.checkCancellation()
         meetingBatchManager = manager
-        log.info("Parakeet TDT v3 (meeting, multilingual) downloaded and warmed up.")
+        log.notice(
+            "Parakeet Ultra loaded in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s."
+        )
     }
 
     func unloadMeetingManager() {
         meetingBatchLoadTask?.cancel()
         meetingBatchLoadTask = nil
         meetingBatchManager = nil
-        log.info("Parakeet TDT v3 (meeting) unloaded.")
+        log.info("Parakeet Ultra (meeting) unloaded.")
     }
 
-    // Separate on-disk folder from batchModelDirectory - v2 and v3 are
+    // Separate on-disk folder from batchModelDirectory - v2 and Ultra are
     // different weights, so they can't share a directory the way EOU's chunk
-    // variants do.
+    // variants do. FluidAudio keeps a model in `<parent>/<repo folder name>`,
+    // so the folder name has to be its "parakeet-ultra".
     static var meetingModelDirectory: URL {
-        ModelManager.modelsDirectory.appendingPathComponent("parakeet-tdt-0.6b-v3", isDirectory: true)
+        ModelManager.modelsDirectory.appendingPathComponent("parakeet-ultra", isDirectory: true)
     }
 
     static func meetingModelIsInstalled() -> Bool {
@@ -149,6 +184,23 @@ final class ParakeetEngine: TranscriptionEngine {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+    }
+
+    // Smart Typing's model load, shared by warmup and presses: the one in
+    // flight, or a new one. Cleared when it ends, so a press after a failed
+    // load starts over, and a load that outlives a press's wait is still
+    // there for the next press to join.
+    private func streamingLoad() -> Task<Void, Never> {
+        if let inFlight = streamingWarmupTask { return inFlight }
+        let task = Task { [weak self] () -> Void in
+            await self?.loadStreamingManager()
+        }
+        streamingWarmupTask = task
+        Task { [weak self] in
+            await task.value
+            if self?.streamingWarmupTask == task { self?.streamingWarmupTask = nil }
+        }
+        return task
     }
 
     private func loadStreamingManager() async {
@@ -167,6 +219,8 @@ final class ParakeetEngine: TranscriptionEngine {
         let reporter = Self.eouIsInstalled() ? nil : eouDownload
         reporter?.begin()
         defer { reporter?.end() }
+        let started = Date()
+        log.notice("Parakeet EOU loading\(reporter == nil ? "" : ", downloading first", privacy: .public).")
         let manager = StreamingEouAsrManager(
             configuration: MLModelConfiguration(),
             chunkSize: Self.streamingChunk,
@@ -174,8 +228,8 @@ final class ParakeetEngine: TranscriptionEngine {
         )
         try await manager.loadModels(to: ModelManager.modelsDirectory, progressHandler: reporter?.handler)
         streamingManager = manager
-        log.info(
-            "Parakeet EOU streaming downloaded and warmed up (\(Self.streamingChunk.durationMs, privacy: .public) ms chunks)."
+        log.notice(
+            "Parakeet EOU loaded in \(String(format: "%.1f", Date().timeIntervalSince(started)), privacy: .public)s (\(Self.streamingChunk.durationMs, privacy: .public) ms chunks)."
         )
     }
 
@@ -236,14 +290,15 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     func transcribe(samples: [Float]) async throws -> String {
+        try await load()
         let detailed = try await transcribeDetailed(samples: samples)
-        return TranscriptCleaner.clean(detailed.text)
+        return TranscriptCleaner.clean(await vocabulary.apply(to: detailed, samples: samples))
     }
 
     // Returns token timings (dropped by transcribe()) for diarization merge.
     // Runs v2 (highest English recall; non-English dictation uses Whisper
-    // instead). `language: .english` is a no-op on v2 - it only drives v3's
-    // token filter - but keeps the call correct if v2 is ever swapped for v3.
+    // instead). `language: .english` is a no-op on v2 - it only drives Ultra's
+    // token filter - but keeps the call correct if v2 is ever swapped for Ultra.
     func transcribeDetailed(samples: [Float]) async throws -> ASRResult {
         if batchManager == nil { await warmup() }
         guard let manager = batchManager else { throw EngineError.notLoaded }
@@ -252,7 +307,7 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     // Meeting-only multilingual counterpart to transcribeDetailed(), backed by
-    // the v3 manager. `language` drives v3's script-aware token filter
+    // the Ultra manager. `language` drives Ultra's script-aware token filter
     // (reduces wrong-script leakage, e.g. Cyrillic tokens mid-Polish
     // transcript) - pass the meeting's configured language, or nil to let
     // the decoder run unfiltered.
@@ -260,15 +315,13 @@ final class ParakeetEngine: TranscriptionEngine {
         if meetingBatchManager == nil { try await downloadAndLoadMeetingManager() }
         guard let manager = meetingBatchManager else { throw EngineError.notLoaded }
         return try await runTranscribe(
-            on: manager, samples: samples, language: language, modelLabel: "Parakeet v3 (meeting)")
+            on: manager, samples: samples, language: language, modelLabel: "Parakeet Ultra (meeting)")
     }
 
     // Bounds CoreML inference so a stuck decode can't pin the HUD on
-    // "Transcribing" forever (a Parakeet prediction on the A18-class MacBook
-    // Neo's ANE has been observed to never return). Audio-proportional budget
-    // trips only on a genuine hang, not slow-but-working audio. Decoder state
-    // is built inside the work closure to keep its `inout` off the
-    // concurrency boundary.
+    // "Transcribing" forever. Audio-proportional budget trips only on a
+    // genuine hang, not slow-but-working audio. Decoder state is built inside
+    // the work closure to keep its `inout` off the concurrency boundary.
     private func runTranscribe(
         on manager: AsrManager, samples: [Float], language: Language?, modelLabel: String
     ) async throws -> ASRResult {
@@ -296,12 +349,15 @@ final class ParakeetEngine: TranscriptionEngine {
     }
 
     func makeStreamingSession() async throws -> any StreamingSession {
-        if let task = streamingWarmupTask {
-            await task.value
-            streamingWarmupTask = nil
-        }
         if streamingManager == nil {
-            await loadStreamingManager()
+            let task = streamingLoad()
+            log.notice("Waiting for Parakeet EOU to load.")
+            do {
+                try await withTimeout(modelLoadTimeout) { await task.value }
+            } catch is TimedOutError {
+                log.error("Gave up waiting for Parakeet EOU to load. It keeps loading in the background.")
+                throw EngineError.modelLoadTimedOut
+            }
         }
         guard let manager = streamingManager else { throw EngineError.notLoaded }
         // Fresh decoder/cache state per session; the manager is reused

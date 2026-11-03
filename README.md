@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
 - **Voice Edit** rewrites selected text when you say what to change.
 - **Languages**: English by default, about 100 for dictation with Whisper, and 28 for meetings.
 - **Voice commands** for punctuation, new lines and "scratch that", plus your own.
-- **Vocabulary** fixes the names and acronyms it mishears, and drops "um" and "uh".
+- **Vocabulary** listens for the names and terms you add, fixes words it keeps mishearing, and drops "um" and "uh".
 - **Private**: no account, no cloud, no telemetry.
 
 ## Screenshots
@@ -38,6 +38,19 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
   <img src="Resources/screenshots/settings-vocabulary.png" width="49%" alt="Vocabulary settings">
   <img src="Resources/screenshots/settings-models.png" width="49%" alt="Models settings">
 </p>
+
+## Benchmarks
+
+Purr, Wispr Flow (free plan, runs in the cloud) and Superwhisper (free plan, runs on the Mac) heard the same recordings in their dictation mode, played into each app as its microphone. Lower numbers are better for latency and WER, and higher for names spelled right.
+
+| | Purr | Wispr Flow | Superwhisper |
+|---|---|---|---|
+| Latency (key release to text) | **0.22 s** | 0.63 s | 1.30 s |
+| Word error rate (WER), everyday speech | 3.8% | **3.4%** | 9.0% |
+| WER, hard audio (noise, accents, quiet speech) | **4.0%** | **4.0%** | 10.0% |
+| WER, in non-English languages | 7.1% | **5.8%** | 12.1% |
+| Names and terms spelled right (same list in each app) | 72.6% | **93.5%** | 51.6% |
+| Works offline | **yes** | no | **yes** |
 
 ## Install
 
@@ -78,14 +91,14 @@ While dictating, say "comma", "period", "question mark", "new line", "new paragr
 <details>
 <summary><strong>Does anything leave my Mac?</strong></summary>
 
-No. Recording, transcription, summaries and Voice Edit all run on your Mac. Purr only goes online to download models and, when you open About, to check GitHub for a new version. Once the models are downloaded, it works offline.
+No. Recording, transcription, summaries and Voice Edit all run on your Mac. Purr only goes online to download models and to check GitHub for updates. Once the models are downloaded, it works offline.
 
 </details>
 
 <details>
 <summary><strong>Which languages does it support?</strong></summary>
 
-Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** for about 100 other languages, and optionally translate them into English. Meetings work in English and 27 more languages (pick one in **Settings > Meetings**), and the summary is written in the meeting's language.
+Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** for about 100 other languages, pick the one you speak (auto-detect can misread short clips), and optionally translate it into English. Meetings work in English and 27 more languages (pick one in **Settings > Meetings**), and the summary is written in the meeting's language.
 
 </details>
 
@@ -93,6 +106,8 @@ Dictation uses Parakeet for English. Switch to Whisper in **Settings > Engine** 
 <summary><strong>Does meeting mode record the other people on my call?</strong></summary>
 
 Yes. It records your mic and your Mac's audio output together, so remote voices are transcribed too. On macOS 14.0 and 14.1, only your mic is recorded.
+
+When nothing plays through your Mac, like a meeting around one table, Purr tells the voices your mic hears apart and labels them Speaker 1, Speaker 2 and so on.
 
 </details>
 
@@ -106,7 +121,9 @@ On MacBooks with a notch, menu bar icons can hide behind it when the bar is full
 <details>
 <summary><strong>How do I update Purr?</strong></summary>
 
-Open **About Purr** from the menu bar. It checks GitHub Releases each time it opens, and installs a new version after verifying its SHA-256.
+The first time Purr starts after setup, it asks whether to check for updates automatically. If you say yes, it checks GitHub once a day. You can also click **Check for Updates** in the menu bar or in About at any time, and turn automatic checks on or off in **Settings > General**.
+
+When there's a new version, you see what changed before anything installs. If one turns up while you're working, the menu bar icon gets a dot and the menu shows **Update Available**. Purr checks that each update is signed by its developer before it replaces the app, and it holds the relaunch while it's recording or transcribing.
 
 </details>
 
@@ -133,7 +150,8 @@ Purr is MIT licensed. Copyright (c) 2026 Arun Brahma. See [LICENSE](LICENSE).
 
 Models download on first use, are never bundled, and keep their own licenses:
 
-- **Parakeet TDT v2 and v3** (NVIDIA, via FluidAudio): CC-BY-4.0
+- **Parakeet TDT v2** (NVIDIA, via FluidAudio): CC-BY-4.0
+- **Parakeet Ultra** (moondream's post-training of NVIDIA's Parakeet TDT v3, via FluidAudio): CC-BY-4.0
 - **Whisper** (OpenAI, via WhisperKit): MIT
 - **Gemma 4 E2B** (Google): [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 

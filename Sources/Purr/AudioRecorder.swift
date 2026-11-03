@@ -231,12 +231,12 @@ final class AudioRecorder: @unchecked Sendable {
     // Runs the two one-time setup costs of a process's first start(), so the
     // first press doesn't wait on them. Later starts reuse both:
     // - The first Audio Unit lookup fetches the component list from macOS's
-    //   AudioComponentRegistrar, which exits when idle. Its cold start includes
-    //   an x86-64 plug-in scan under Rosetta and can take ~2 s.
+    //   AudioComponentRegistrar, which exits when idle. Its cold start scans
+    //   the installed audio plug-ins and can take seconds.
     // - Core Audio's in-process setup (audio server connection, device list,
-    //   voice isolation) took 0.1-0.5 s. Reading the default input runs it
-    //   without opening the mic. Skipped until mic access is granted, so it
-    //   can never be what prompts.
+    //   voice isolation). Reading the default input runs it without opening
+    //   the mic. Skipped until mic access is granted, so it can never be what
+    //   prompts.
     static func prepareForFirstStart() {
         var desc = halOutputDescription
         _ = AudioComponentFindNext(nil, &desc)

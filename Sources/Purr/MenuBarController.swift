@@ -18,6 +18,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     // dead. Also re-checked in menuNeedsUpdate(_:).
     private let permissionsItem = NSMenuItem()
     private let permissionsSeparator = NSMenuItem.separator()
+    // Check for Updates, or Update Available while an update Sparkle found
+    // in the background waits to be looked at. The icon gets a dot then too.
+    private let updateItem = NSMenuItem()
+    private let updater: Updater
 
     private let onShowAbout: () -> Void
     private let onShowSettings: () -> Void
@@ -27,6 +31,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private lazy var iconIdle =
         templateImage(named: "purr_menubar_glyph", height: 18)
         ?? templateSymbol(named: "mic")
+    private lazy var iconIdleUpdate = iconIdle.map(withDot)
     private lazy var iconRecording = templateSymbol(named: "mic.fill")
     // Transcribing and meeting pair the speech glyph with a second symbol so a
     // glance distinguishes them from plain dictation.
@@ -36,6 +41,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     init(
         coordinator: AppCoordinator,
+        updater: Updater,
         onShowAbout: @escaping () -> Void,
         onShowSettings: @escaping () -> Void,
         onShowPermissions: @escaping () -> Void,
@@ -45,6 +51,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         self.onShowSettings = onShowSettings
         self.onShowPermissions = onShowPermissions
         self.onQuit = onQuit
+        self.updater = updater
         self.blockedShortcuts = { [weak coordinator] in coordinator?.shortcutsBlockedBySecureInput ?? [] }
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -53,8 +60,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         configureButton()
         rebuildMenu()
 
-        stateCancellable = coordinator.$menuBarStatus.sink { [weak self] status in
-            self?.applyStatus(status)
+        stateCancellable = coordinator.$menuBarStatus.combineLatest(updater.$reminder).sink {
+            [weak self] status, reminder in
+            self?.applyStatus(status, updateWaiting: reminder != nil)
         }
     }
 
@@ -86,6 +94,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(menuItem(title: "About Purr", selector: #selector(triggerAbout)))
+        updateItem.title = "Check for Updates…"
+        updateItem.action = #selector(triggerCheckForUpdates)
+        menu.addItem(updateItem)
         menu.addItem(.separator())
         menu.addItem(menuItem(title: "Settings", selector: #selector(triggerSettings)))
         menu.addItem(.separator())
@@ -154,6 +165,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func triggerAbout() { onShowAbout() }
+    @objc private func triggerCheckForUpdates() { updater.checkForUpdates() }
     @objc private func triggerSettings() { onShowSettings() }
     @objc private func triggerPermissions() { onShowPermissions() }
     @objc private func triggerQuit() { onQuit() }
@@ -162,12 +174,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     // State icon
     // ------------------------------------------------------------------
 
-    private func applyStatus(_ status: AppCoordinator.MenuBarStatus) {
+    private func applyStatus(_ status: AppCoordinator.MenuBarStatus, updateWaiting: Bool) {
+        updateItem.title = updateWaiting ? "Update Available…" : "Check for Updates…"
         guard let button = statusItem.button else { return }
         switch status {
         case .idle:
-            button.image = iconIdle
-            button.toolTip = "Purr - ready"
+            button.image = updateWaiting ? iconIdleUpdate : iconIdle
+            button.toolTip = updateWaiting ? "Purr - update available" : "Purr - ready"
         case .recording:
             button.image = iconRecording
             button.toolTip = "Purr - recording…"
@@ -205,6 +218,24 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return image
     }
 
+    // The image with a dot at its top-right corner, cut out of the glyph
+    // where they overlap, like a notification badge.
+    private func withDot(_ image: NSImage) -> NSImage {
+        let dot: CGFloat = 6
+        let size = NSSize(width: image.size.width + 2, height: image.size.height)
+        let badged = NSImage(size: size, flipped: false) { _ in
+            image.draw(in: NSRect(origin: .zero, size: image.size))
+            let rect = NSRect(x: size.width - dot, y: size.height - dot, width: dot, height: dot)
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSBezierPath(ovalIn: rect.insetBy(dx: -1.5, dy: -1.5)).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            NSBezierPath(ovalIn: rect).fill()
+            return true
+        }
+        badged.isTemplate = true
+        return badged
+    }
+
     // Draws several SF Symbols left-to-right into one image. isTemplate lets the
     // menu bar tint the composite like a single symbol; the drawingHandler
     // re-renders at the display's scale (crisp on Retina). Each source symbol
@@ -228,5 +259,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         composite.isTemplate = true
         return composite
+    }
+}
+
+extension MenuBarController: NSMenuItemValidation {
+    // Off while Sparkle is busy checking.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item !== updateItem || updater.canCheckForUpdates
     }
 }

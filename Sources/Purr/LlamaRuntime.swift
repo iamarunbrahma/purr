@@ -21,13 +21,12 @@ actor LlamaRuntime {
         try loadedSession().generate(prompt: prompt, parameters: parameters)
     }
 
-    // Best-effort background load, a no-op once the session is resident. Used
-    // to overlap a cold model load with other work (e.g. the voice-edit
-    // recording window).
-    func warmUp() {
-        guard session == nil else { return }
+    // Best-effort, to overlap work with the voice-edit recording window: loads
+    // the model if it isn't resident, then prefills `prefix`, so the generate()
+    // whose prompt starts with it decodes only the rest.
+    func warmUp(prefix: String) {
         do {
-            session = try makeSession()
+            try loadedSession().prefill(prompt: prefix)
             log.info("Llama runtime warmed up.")
         } catch {
             log.error("Llama warmup failed: \(error.localizedDescription, privacy: .public)")

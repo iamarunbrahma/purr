@@ -7,7 +7,6 @@
 # OS will route TCC prompts to it.
 
 APP_NAME      := Purr
-BUNDLE_ID     := com.arunbrahma.purr
 CONFIG        := release
 BUILD_DIR     := .build
 APP_DIR       := dist/$(APP_NAME).app
@@ -54,11 +53,20 @@ endif
 # exported below; make 3.81's $(shell) wouldn't, and could ask another Swift.
 BIN_DIR = $$(swift build -c $(CONFIG) --arch arm64 --show-bin-path)
 # llama.cpp is shipped as an XCFramework binary target. SwiftPM stages
-# the macOS-arm64 slice next to the built executable; we copy that into
-# the bundle's Frameworks/ and add the rpath the executable needs to
-# find it at runtime (the linker's default @loader_path works when the
-# binary sits beside the framework, but the .app layout splits them).
+# its macOS framework (arm64 and x86_64) next to the built executable; we
+# copy that into the bundle's Frameworks/, keep only arm64, and add the
+# rpath the executable needs to find it at runtime (the linker's default
+# @loader_path works when the binary sits beside the framework, but the
+# .app layout splits them).
 LLAMA_FRAMEWORK_SRC = $(BIN_DIR)/llama.framework
+# Sparkle, the updater, arrives the same way. Its sign_update tool signs each
+# release's DMG with the EdDSA key that `generate_keys --account purr` put in
+# the login keychain. Installed copies trust only updates signed with that
+# key (SUPublicEDKey in Info.plist), so keep it backed up.
+SPARKLE_FRAMEWORK_SRC = $(BIN_DIR)/Sparkle.framework
+SPARKLE_BIN    := $(BUILD_DIR)/artifacts/sparkle/Sparkle/bin
+SPARKLE_KEY    ?= purr
+APPCAST        := dist/appcast.xml
 
 # The @Generable / @Guide macros (FoundationModels) need Xcode's compiler
 # plugin (libFoundationModelsMacros), which the standalone Command Line
@@ -69,7 +77,7 @@ LLAMA_FRAMEWORK_SRC = $(BIN_DIR)/llama.framework
 DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 export DEVELOPER_DIR
 
-.PHONY: app run dmg notarize-app clean
+.PHONY: app run dmg notarize-app appcast clean
 
 app:
 	swift build -c $(CONFIG) --arch arm64
@@ -89,6 +97,8 @@ app:
 	@# reproducible across builds.
 	@rm -rf $(FRAMEWORKS_DIR)/llama.framework
 	@cp -Rp "$(LLAMA_FRAMEWORK_SRC)" $(FRAMEWORKS_DIR)/llama.framework
+	@# Purr is built for arm64 only, so the x86_64 half is dead weight.
+	@lipo $(FRAMEWORKS_DIR)/llama.framework/Versions/A/llama -thin arm64 -output $(FRAMEWORKS_DIR)/llama.framework/Versions/A/llama
 	@# Add @executable_path/../Frameworks to the binary's rpath. Quiet if
 	@# already present (re-runs of `make app` would otherwise fail).
 	@install_name_tool -add_rpath @executable_path/../Frameworks $(MACOS_DIR)/$(APP_NAME) 2>/dev/null || true
@@ -97,6 +107,14 @@ app:
 	@# inside-out for distribution). CODESIGN_OPTS adds Hardened Runtime +
 	@# a secure timestamp only when DEV_ID is a real identity (see above).
 	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/llama.framework
+	@# Sparkle's XPC services are only for sandboxed apps, so they're left
+	@# out. Its installer and updater helpers are signed before the framework.
+	@rm -rf $(FRAMEWORKS_DIR)/Sparkle.framework
+	@cp -Rp "$(SPARKLE_FRAMEWORK_SRC)" $(FRAMEWORKS_DIR)/Sparkle.framework
+	@rm -rf $(FRAMEWORKS_DIR)/Sparkle.framework/Versions/B/XPCServices
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/Sparkle.framework/Versions/B/Autoupdate
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/Sparkle.framework/Versions/B/Updater.app
+	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" $(FRAMEWORKS_DIR)/Sparkle.framework
 	@codesign --force $(CODESIGN_OPTS) --sign "$(DEV_ID)" --entitlements $(ENTITLEMENTS) $(APP_DIR)
 	@# Bump the bundle's mtime. macOS keys its icon/LaunchServices cache on the
 	@# bundle modification date; copying a new AppIcon.icns into an existing
@@ -165,13 +183,21 @@ dmg: notarize-app
 	@# the sha256 below or the published hash won't match the shipped file.
 	@xcrun notarytool submit $(DMG) --keychain-profile "$(NOTARY_PROFILE)" --wait
 	@xcrun stapler staple $(DMG)
-	@# Sidecar SHA-256 published alongside the DMG. The Updater fetches this
-	@# file from the GitHub release and verifies the downloaded DMG against it
-	@# BEFORE invoking the install helper. Computed last, on the stapled image,
-	@# so it matches what users download. Format is `<hex>  Purr.dmg\n`, matching
-	@# `shasum -a 256` output so anyone can `shasum -a 256 -c` it manually.
+	@# Sidecar SHA-256 published alongside the DMG. Computed last, on the
+	@# stapled image, so it matches what users download. Format is
+	@# `<hex>  Purr.dmg\n`, matching `shasum -a 256` output so anyone can
+	@# `shasum -a 256 -c` it.
 	@shasum -a 256 "$(DMG)" | awk '{ printf "%s  $(APP_NAME).dmg\n", $$1 }' > $(DMG).sha256
 	@echo "Built $(DMG) ($$(du -h $(DMG) | cut -f1)) + $(DMG).sha256"
+
+# The update feed for the release, from the DMG `make dmg` built: its EdDSA
+# signature, and this version's CHANGELOG.md section as the release notes.
+# Publish it as a release asset next to Purr.dmg, since installed copies read
+# it from the latest release.
+appcast:
+	@scripts/appcast.sh $(DMG) "$(SPARKLE_BIN)/sign_update" $(SPARKLE_KEY) > $(APPCAST).tmp
+	@mv $(APPCAST).tmp $(APPCAST)
+	@echo "Built $(APPCAST)"
 
 clean:
 	rm -rf $(BUILD_DIR) dist

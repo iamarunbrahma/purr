@@ -48,6 +48,9 @@ final class LlamaSession {
         var repetitionPenalty: Float = 1.1
         var repetitionContextSize: Int32 = 64
         var nBatch: UInt32 = 512
+        // Called with the reply's complete lines each time one ends; true
+        // stops the reply.
+        var stopAfterLine: (@Sendable (String) -> Bool)?
     }
 
     private let log = Logger(subsystem: "com.arunbrahma.purr", category: "llama")
@@ -55,6 +58,9 @@ final class LlamaSession {
     private let vocab: OpaquePointer
     private let context: OpaquePointer
     private let contextSize: Int
+    // The tokens whose KV cells are in the context, in position order: the
+    // last prompt plus what was generated after it.
+    private var cachedTokens: [llama_token] = []
 
     init(modelPath: String) throws {
         // Must be set before ggml creates the Metal device during the model load
@@ -70,7 +76,7 @@ final class LlamaSession {
         // Offload every block to Metal: Gemma 4 E2B at Q4_0 is ~3.3 GB, which
         // fits the unified-memory GPU partition on every Mac we support (8 GB+).
         modelParams.n_gpu_layers = 999
-        modelParams.use_mmap = true
+        modelParams.load_mode = LLAMA_LOAD_MODE_MMAP
 
         guard let loaded = llama_model_load_from_file(modelPath, modelParams) else {
             throw LlamaError.modelLoadFailed(path: modelPath)
@@ -84,11 +90,13 @@ final class LlamaSession {
         self.vocab = v
 
         var ctxParams = llama_context_default_params()
-        // Covers a 24K-char transcript head/tail window (~6K prompt tokens of
-        // English) plus a 1000-token response. Gemma 4's sliding-window layers
-        // keep the KV cache small: 8192 costs ~80 MB more than 4096 did.
-        ctxParams.n_ctx = 8192
+        // Covers a 24K-char piece of meeting transcript (~6K prompt tokens of
+        // English) plus a 4096-token summary. The KV cache for it is ~216 MB.
+        ctxParams.n_ctx = 12288
         ctxParams.n_batch = 512
+        // Gemma's sliding-window layers keep every position, not just the last
+        // window, so a prompt can reuse the cells of the previous one's prefix.
+        ctxParams.swa_full = true
         // Leave two cores for audio and UI. The cap of 8 mirrors the upstream
         // Swift example - more threads hurt than help on M-series.
         let threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
@@ -115,25 +123,8 @@ final class LlamaSession {
     // Honours Task cancellation between sampling iterations, so the watchdog in
     // MeetingSummarizer can abort a stuck run by cancelling the surrounding Task.
     func generate(prompt: String, parameters: Parameters = .init()) throws -> String {
-        // 1. Tokenize. The first llama_tokenize call passes a nil buffer to
-        //    learn the token count (returned negative); the second fills it.
-        let promptBytes = prompt.utf8.count
-        var probe: [llama_token] = []
-        let probedNeg = prompt.withCString { cStr in
-            llama_tokenize(vocab, cStr, Int32(promptBytes), &probe, 0, true, true)
-        }
-        let needed = Int(-probedNeg)
-        guard needed > 0 else { throw LlamaError.tokenizeFailed }
-
-        var tokens = [llama_token](repeating: 0, count: needed)
-        let actual = prompt.withCString { cStr in
-            tokens.withUnsafeMutableBufferPointer { buf in
-                llama_tokenize(
-                    vocab, cStr, Int32(promptBytes), buf.baseAddress, Int32(buf.count), true, true)
-            }
-        }
-        guard actual > 0 else { throw LlamaError.tokenizeFailed }
-        tokens = Array(tokens.prefix(Int(actual)))
+        // 1. Tokenize.
+        let tokens = try tokenize(prompt)
 
         // Past the window, llama_decode fails with no free KV slot - in the
         // prompt, or worse, partway through the response. Refuse up front with
@@ -154,6 +145,7 @@ final class LlamaSession {
         llama_sampler_chain_add(
             sampler,
             llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab),
                 Int32(parameters.repetitionContextSize),
                 parameters.repetitionPenalty,
                 0.0,
@@ -166,17 +158,136 @@ final class LlamaSession {
         // 3. Decode the prompt. n_seq_max=1 - only ever one sequence at a time.
         var batch = llama_batch_init(Int32(parameters.nBatch), 0, 1)
         defer { llama_batch_free(batch) }
+        try decodePrompt(tokens, batch: &batch, chunkSize: Int(parameters.nBatch))
 
-        // Drop KV-cache state left by a previous generate() on this reused
-        // session: re-decoding overlapping positions without a clear stacks
-        // duplicate cells, making the model attend to stale context.
-        llama_memory_clear(llama_get_memory(context), true)
+        // 4. Sample a token, keep its bytes, and decode it in one batch with
+        //    the tokens guessed to follow it (see guesses(after:limit:)). Each
+        //    guess the sampler then draws again is kept without a decode of
+        //    its own, and the cells from the first wrong guess on are dropped.
+        //    Every kept token is still sampled in order, so guessing changes
+        //    the speed, not what the sampler can produce. Stops on EOG (Gemma 4
+        //    emits <turn|>), the cap, stopAfterLine, or cancellation. Bytes
+        //    rather than Strings accumulate because a character outside the
+        //    vocabulary arrives as several byte tokens, each one an incomplete
+        //    UTF-8 sequence on its own.
+        var output: [UInt8] = []
+        var history = tokens
+        var pos = Int32(tokens.count)
+        var generated = 0
+        var decodes = 0
+        var checkedBytes = 0
+        let maxTokens = parameters.maxTokens
+        let memory = llama_get_memory(context)
+
+        var token = llama_sampler_sample(sampler, context, -1)
+        while generated < maxTokens, !llama_vocab_is_eog(vocab, token) {
+            if Task.isCancelled { throw LlamaError.cancelled }
+            output.append(contentsOf: Self.tokenBytes(token: token, vocab: vocab))
+            history.append(token)
+            generated += 1
+            if generated == maxTokens { break }
+
+            let guesses = Self.guesses(after: history, limit: min(Self.maxGuesses, maxTokens - generated))
+            llamaBatchClear(&batch)
+            llamaBatchAdd(&batch, token, pos, [0], true)
+            for (i, guess) in guesses.enumerated() {
+                llamaBatchAdd(&batch, guess, pos + 1 + Int32(i), [0], true)
+            }
+            let stepRC = llama_decode(context, batch)
+            if stepRC != 0 { throw LlamaError.decodeFailed(code: stepRC) }
+            decodes += 1
+            cachedTokens.append(token)
+            pos += 1
+
+            // Row 0 of the batch's logits follows `token`, row i guesses[i - 1].
+            var kept = 0
+            token = llama_sampler_sample(sampler, context, 0)
+            while kept < guesses.count, token == guesses[kept], !llama_vocab_is_eog(vocab, token) {
+                output.append(contentsOf: Self.tokenBytes(token: token, vocab: vocab))
+                history.append(token)
+                cachedTokens.append(token)
+                generated += 1
+                pos += 1
+                kept += 1
+                token = llama_sampler_sample(sampler, context, Int32(kept))
+            }
+            // swa_full keeps every cell, so dropping the tail can't fail; if it
+            // did, stale cells would sit where the next token goes.
+            if kept < guesses.count, !llama_memory_seq_rm(memory, 0, pos, -1) {
+                throw LlamaError.decodeFailed(code: -1)
+            }
+            if let stopAfterLine = parameters.stopAfterLine,
+                let newline = output[checkedBytes...].lastIndex(of: UInt8(ascii: "\n"))
+            {
+                checkedBytes = newline + 1
+                if stopAfterLine(String(decoding: output[...newline], as: UTF8.self)) { break }
+            }
+        }
+        log.info("Llama reply: \(generated, privacy: .public) tokens in \(decodes, privacy: .public) decodes")
+
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    // Decodes the start of a prompt ahead of the generate() call that will
+    // send all of it, such as a voice edit's prompt up to the instruction.
+    func prefill(prompt: String) throws {
+        let tokens = try tokenize(prompt)
+        guard tokens.count <= contextSize else {
+            throw LlamaError.promptTooLong(tokens: tokens.count, budget: contextSize)
+        }
+        let chunkSize = Parameters().nBatch
+        var batch = llama_batch_init(Int32(chunkSize), 0, 1)
+        defer { llama_batch_free(batch) }
+        try decodePrompt(tokens, batch: &batch, chunkSize: Int(chunkSize))
+    }
+
+    // The first llama_tokenize call passes a nil buffer to learn the token
+    // count (returned negative); the second fills it.
+    private func tokenize(_ prompt: String) throws -> [llama_token] {
+        let promptBytes = prompt.utf8.count
+        var probe: [llama_token] = []
+        let probedNeg = prompt.withCString { cStr in
+            llama_tokenize(vocab, cStr, Int32(promptBytes), &probe, 0, true, true)
+        }
+        let needed = Int(-probedNeg)
+        guard needed > 0 else { throw LlamaError.tokenizeFailed }
+
+        var tokens = [llama_token](repeating: 0, count: needed)
+        let actual = prompt.withCString { cStr in
+            tokens.withUnsafeMutableBufferPointer { buf in
+                llama_tokenize(
+                    vocab, cStr, Int32(promptBytes), buf.baseAddress, Int32(buf.count), true, true)
+            }
+        }
+        guard actual > 0 else { throw LlamaError.tokenizeFailed }
+        return Array(tokens.prefix(Int(actual)))
+    }
+
+    // Keeps the cells of the longest prefix `tokens` share with the previous
+    // call's, such as a voice edit's prompt prefilled at the hotkey press, and
+    // decodes the rest. The last token is always decoded: sampling reads its
+    // logits.
+    private func decodePrompt(_ tokens: [llama_token], batch: inout llama_batch, chunkSize: Int) throws {
+        let memory = llama_get_memory(context)
+        var reused = 0
+        while reused < min(cachedTokens.count, tokens.count - 1), cachedTokens[reused] == tokens[reused] {
+            reused += 1
+        }
+        // Cells past the shared prefix must go first: decoding over their
+        // positions stacks duplicate cells, making the model attend to stale
+        // context. seq_rm returns false if the cache can't drop a partial
+        // range; then everything goes.
+        if reused == 0 || !llama_memory_seq_rm(memory, 0, Int32(reused), -1) {
+            llama_memory_clear(memory, true)
+            reused = 0
+        }
+        cachedTokens = Array(tokens.prefix(reused))
+        log.info("Llama prompt: \(tokens.count, privacy: .public) tokens, \(reused, privacy: .public) reused")
 
         // A single llama_batch holds at most n_batch tokens, so a longer prompt
         // has to be decoded in chunks. Only the very last token gets the logits
         // bit, so the model yields a next-token distribution.
-        let chunkSize = Int(parameters.nBatch)
-        var offset = 0
+        var offset = reused
         while offset < tokens.count {
             let end = min(offset + chunkSize, tokens.count)
             llamaBatchClear(&batch)
@@ -185,35 +296,34 @@ final class LlamaSession {
             }
             let promptRC = llama_decode(context, batch)
             if promptRC != 0 { throw LlamaError.decodeFailed(code: promptRC) }
+            cachedTokens.append(contentsOf: tokens[offset..<end])
             offset = end
         }
+    }
 
-        // 4. Sample a token, keep its bytes, feed it back as a single-token
-        //    batch. Stops on EOG (Gemma 4 emits <turn|>), the cap, or
-        //    cancellation. Bytes rather than Strings accumulate because a
-        //    character outside the vocabulary arrives as several byte tokens,
-        //    each one an incomplete UTF-8 sequence on its own.
-        var output: [UInt8] = []
-        var pos = Int32(tokens.count)
-        let maxTokens = parameters.maxTokens
+    // llama.cpp's Metal kernels decode a few tokens for little more than the
+    // cost of one; past 4 guesses, meeting minutes were no faster.
+    private static let maxGuesses = 4
 
-        for _ in 0..<maxTokens {
-            if Task.isCancelled { throw LlamaError.cancelled }
-
-            let newToken = llama_sampler_sample(sampler, context, -1)
-            if llama_vocab_is_eog(vocab, newToken) { break }
-
-            output.append(contentsOf: Self.tokenBytes(token: newToken, vocab: vocab))
-
-            llamaBatchClear(&batch)
-            llamaBatchAdd(&batch, newToken, pos, [0], true)
-            pos += 1
-
-            let stepRC = llama_decode(context, batch)
-            if stepRC != 0 { throw LlamaError.decodeFailed(code: stepRC) }
+    // Prompt lookup: the tokens that followed the latest earlier occurrence
+    // of the last three tokens (else two), in the prompt or the reply so far.
+    // Minutes and edits copy names and phrases from their transcript or
+    // selection, so these are often right.
+    private static func guesses(after history: [llama_token], limit: Int) -> [llama_token] {
+        guard limit > 0 else { return [] }
+        for n in [3, 2] where history.count > n {
+            let tail = history.count - n
+            var start = tail - 1
+            while start >= 0 {
+                var matched = 0
+                while matched < n, history[start + matched] == history[tail + matched] { matched += 1 }
+                if matched == n {
+                    return Array(history[(start + n)..<min(start + n + limit, history.count)])
+                }
+                start -= 1
+            }
         }
-
-        return String(decoding: output, as: UTF8.self)
+        return []
     }
 
     // token_to_piece may need more than 16 bytes for a long piece; a negative

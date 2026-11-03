@@ -103,8 +103,13 @@ struct OnboardingView: View {
 
         case .download:
             let status = models[chosenModel]
-            if status.isOnDisk, status.download == nil {
+            if status.isOnDisk, status.progress == nil {
                 heading("The speech model is ready", "It's on this Mac now, so Purr works offline.")
+            } else if status.isOnDisk, status.download == nil {
+                heading(
+                    "Optimizing the speech model",
+                    "Purr compiles it for this Mac once. It can take a few minutes, and you can keep going."
+                )
             } else if status.download == nil, status.failure != nil {
                 heading("The download stopped", "Check your internet connection, then retry.")
             } else {

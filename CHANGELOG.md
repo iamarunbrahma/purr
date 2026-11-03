@@ -9,5 +9,5 @@
 - Voice Edit, which rewrites selected text from a spoken instruction.
 - Voice commands, filler trimming and a custom vocabulary.
 - Meeting audio saved next to the notes, if you want it.
-- Updates from GitHub Releases, checked when About opens.
+- Updates with release notes, checked once a day if you allow it.
 - Uninstall from Settings > General.

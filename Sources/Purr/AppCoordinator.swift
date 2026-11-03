@@ -68,7 +68,8 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    // Lets SwiftUI (the updater UI) disable destructive actions mid-recording.
+    // False mid-recording or transcribing: quitting asks first, and an update
+    // holds its relaunch until this turns true.
     @Published private(set) var safeToQuit: Bool = true
 
     @Published private(set) var menuBarStatus: MenuBarStatus = .idle
@@ -77,8 +78,11 @@ final class AppCoordinator: ObservableObject {
     // automatic warmup download and a manual Download tap.
     @Published private(set) var parakeetBatchProgress: ModelDownloadProgress?
     @Published private(set) var eouDownloadProgress: ModelDownloadProgress?
-    // Unlike the other two, this one never auto-downloads during warmup.
+    // Unlike the other two, these never auto-download during warmup.
     @Published private(set) var meetingLanguageModelProgress: ModelDownloadProgress?
+    @Published private(set) var vocabularyModelProgress: ModelDownloadProgress?
+    // The Whisper model in its first Neural Engine compile, for Settings.
+    @Published private(set) var compilingWhisperModel: String?
 
     // Feeds menuBarStatus - a meeting outranks dictation/voice-edit for the
     // glyph - and canQuitSafely().
@@ -107,6 +111,7 @@ final class AppCoordinator: ObservableObject {
     private var voiceEditor: VoiceEditor!
     private var meetingObserver: AnyCancellable?
     private var voiceEditObserver: AnyCancellable?
+    private var vocabularyObserver: AnyCancellable?
     private var accessibilityObserver: NSObjectProtocol?
 
     private var levelTask: Task<Void, Never>?
@@ -146,6 +151,17 @@ final class AppCoordinator: ObservableObject {
         parakeet.meetingBatchDownload.onChange = { [weak self] progress in
             self?.meetingLanguageModelProgress = progress
         }
+        parakeet.vocabulary.download.onChange = { [weak self] progress in
+            self?.vocabularyModelProgress = progress
+        }
+        // Words added after launch load the model then, not on the first
+        // dictation that needs it.
+        vocabularyObserver = SettingsStore.shared.$vocabularyWords
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] hasWords in
+                if hasWords { self?.parakeet.vocabulary.warmup() }
+            }
 
         // Smart Typing whose model was deleted outside Purr gets turned off
         // rather than silently pulling ~440MB.
@@ -236,6 +252,34 @@ final class AppCoordinator: ObservableObject {
         SettingsStore.shared.meetingEnabled = false
         installHotkeys()
         log.info("Diarizer delete: on-disk removed; meetingEnabled flipped off.")
+        return .ok
+    }
+
+    func downloadVocabularyModel() async -> ModelDownloadResult {
+        do {
+            try await parakeet.vocabulary.downloadAndLoad()
+            return .ok
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    // Keeps the Words, which wait for the model to come back.
+    @discardableResult
+    func deleteVocabularyModel() -> DiarizerDeleteResult {
+        switch state {
+        case .recording, .transcribing: return .busy
+        case .idle, .error: break
+        }
+        if streamingSession != nil || streamingStartupInFlight { return .busy }
+        if voiceEditState != .idle || vocabularyModelProgress != nil { return .busy }
+        parakeet.vocabulary.unload()
+        do {
+            try VocabularyBooster.delete()
+        } catch {
+            return .failed(error)
+        }
+        log.info("Vocabulary model deleted on user request.")
         return .ok
     }
 
@@ -330,7 +374,7 @@ final class AppCoordinator: ObservableObject {
         } catch {
             return .failed(error)
         }
-        log.info("Parakeet TDT v3 (meeting) deleted on user request.")
+        log.info("Parakeet Ultra (meeting) deleted on user request.")
         return .ok
     }
 
@@ -398,6 +442,7 @@ final class AppCoordinator: ObservableObject {
         parakeet.unloadStreamingManager()
         parakeet.unloadBatchManager()
         parakeet.unloadMeetingManager()
+        parakeet.vocabulary.unload()
         return true
     }
 
@@ -406,16 +451,23 @@ final class AppCoordinator: ObservableObject {
         if streamingSession != nil || streamingStartupInFlight { return false }
         if voiceEditState != .idle { return false }
         if parakeetBatchProgress != nil || eouDownloadProgress != nil { return false }
-        return meetingLanguageModelProgress == nil
+        return meetingLanguageModelProgress == nil && vocabularyModelProgress == nil
     }
 
     private func rebuildEngine(initial: Bool) {
         let chosen = SettingsStore.shared.engine
+        compilingWhisperModel = nil
         switch chosen {
         case .parakeet:
             engine = parakeet
         case .whisper:
-            engine = WhisperEngine(modelName: SettingsStore.shared.modelName)
+            let whisper = WhisperEngine(modelName: SettingsStore.shared.modelName)
+            // A replaced engine's load runs on, but Settings shows this one's.
+            whisper.onCompilingChange = { [weak self, weak whisper] compiling in
+                guard let self, let whisper, self.engine === whisper else { return }
+                self.compilingWhisperModel = compiling ? whisper.modelIdentifier : nil
+            }
+            engine = whisper
         }
         if !initial {
             log.info("Engine switched to \(chosen.rawValue, privacy: .public)")
@@ -486,6 +538,13 @@ final class AppCoordinator: ObservableObject {
     private func refreshSafeToQuit() {
         let next = canQuitSafely()
         if safeToQuit != next { safeToQuit = next }
+    }
+
+    // For the quit alert, which says what Quit Anyway does to a meeting.
+    var meetingQuitStage: MeetingPipeline.QuitStage? { meeting?.quitStage }
+
+    func saveMeetingAudioBeforeQuit() {
+        meeting?.saveAudioBeforeQuit()
     }
 
     private func refreshMenuBarStatus() {
@@ -641,7 +700,17 @@ final class AppCoordinator: ObservableObject {
             return
         }
         state = .transcribing
-        hud.show(.transcribing)
+        // Waiting on the model is its own HUD step, so a slow or stuck load
+        // can't pass for a stuck transcription.
+        let needsLoad = !engine.isLoaded
+        if needsLoad {
+            hud.show(engine.loadingMode)
+        } else {
+            hud.show(.transcribing)
+        }
+        // A first compile can keep the text waiting for minutes, long enough
+        // to have moved on to another app.
+        let dictatedInto = NSWorkspace.shared.frontmostApplication?.processIdentifier
 
         // Parakeet TDT hallucinates whole utterances on too-quiet input
         // ("How are you doing?" -> "What were you giving?" is the classic
@@ -654,6 +723,10 @@ final class AppCoordinator: ObservableObject {
         let micWasVeryQuiet = prepared.originalPeakDbFS < -45
 
         do {
+            if needsLoad {
+                try await engine.load()
+                hud.show(.transcribing)
+            }
             let raw = try await engine.transcribe(samples: prepared.samples)
             let processed = makePostProcessor().apply(raw)
             if processed.text.isEmpty {
@@ -664,6 +737,15 @@ final class AppCoordinator: ObservableObject {
                 } else {
                     hud.hide()
                 }
+            } else if SettingsStore.shared.autoPaste, needsLoad,
+                NSWorkspace.shared.frontmostApplication?.processIdentifier != dictatedInto
+            {
+                log.info("Switched apps during the model wait - copying instead of pasting.")
+                copyToClipboard(processed.text)
+                state = .idle
+                hud.showMessage(
+                    "You switched apps while the model loaded, so the text is on the clipboard.",
+                    icon: .copied, autoHideAfter: 4)
             } else if SettingsStore.shared.autoPaste {
                 log.info("Pasting \(processed.text.count, privacy: .public) characters.")
                 inserter.insert(processed.text + " ")
@@ -694,6 +776,8 @@ final class AppCoordinator: ObservableObject {
     private func beginStreamingRecording() {
         streamingStartupInFlight = true
         releasedDuringStartup = false
+        // Otherwise nothing shows while the press waits on Smart Typing's model.
+        if !engine.isStreamingLoaded { hud.show(.loadingModel) }
         Task {
             do {
                 let session = try await engine.makeStreamingSession()
@@ -828,6 +912,14 @@ final class AppCoordinator: ObservableObject {
     // that pass fails.
     private func batchQualityText(audio: [Float], streamed: String) async -> String {
         postLog.debug("streamed: '\(streamed, privacy: .public)'")
+        // Live typing doesn't wait on the batch model, which can still be
+        // loading just after launch: until it's in, sentences paste as
+        // streamed, and warmup joins that load or retries one that failed.
+        guard engine.isLoaded else {
+            log.notice("Batch model not loaded yet, pasting the streamed text.")
+            Task { [engine] in await engine.warmup() }
+            return streamed
+        }
         do {
             let prepared = AudioPreprocessor.normalize(audio)
             return try await engine.transcribe(samples: prepared.samples)

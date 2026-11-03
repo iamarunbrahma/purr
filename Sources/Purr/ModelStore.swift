@@ -60,20 +60,22 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     case parakeetMultilingual
     case smartTyping
     case diarizer
+    case vocabulary
     case gemma
     case whisper(String)
 
     static var all: [ModelKind] {
-        [.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .gemma]
+        [.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .vocabulary, .gemma]
             + ModelManager.curatedModels.map { .whisper($0.id) }
     }
 
     var id: String {
         switch self {
         case .parakeet: return "parakeet-v2"
-        case .parakeetMultilingual: return "parakeet-v3"
+        case .parakeetMultilingual: return "parakeet-ultra"
         case .smartTyping: return "parakeet-eou"
         case .diarizer: return "diarizer"
+        case .vocabulary: return "parakeet-ctc"
         case .gemma: return "gemma"
         case .whisper(let name): return name
         }
@@ -82,9 +84,10 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .parakeet: return "Parakeet TDT v2"
-        case .parakeetMultilingual: return "Parakeet TDT v3"
+        case .parakeetMultilingual: return "Parakeet Ultra"
         case .smartTyping: return "Parakeet EOU 120M"
         case .diarizer: return "Speaker Diarization"
+        case .vocabulary: return "Parakeet CTC 110M"
         case .gemma: return LLMModelManager.defaultModelLabel
         case .whisper(let name): return "Whisper \(Self.whisperChoice(name)?.label ?? name)"
         }
@@ -97,6 +100,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return "Meetings in other languages"
         case .smartTyping: return "Smart Typing"
         case .diarizer: return "Who said what in meetings"
+        case .vocabulary: return "Your words in dictation"
         case .gemma: return "Summaries and voice edit"
         case .whisper(let name): return Self.whisperChoice(name)?.note ?? "Dictation"
         }
@@ -107,9 +111,10 @@ enum ModelKind: Hashable, Identifiable, Sendable {
     var downloadBytes: Int64 {
         switch self {
         case .parakeet: return 464_413_250
-        case .parakeetMultilingual: return 483_256_769
-        case .smartTyping: return 447_774_022
+        case .parakeetMultilingual: return 632_314_500
+        case .smartTyping: return 224_238_533
         case .diarizer: return 21_776_918
+        case .vocabulary: return 102_803_869
         case .gemma: return LLMModelManager.defaultModelExpectedSize
         case .whisper(let name): return Int64(Self.whisperChoice(name)?.sizeMB ?? 0) * 1_048_576
         }
@@ -122,6 +127,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return ParakeetEngine.meetingModelDirectory
         case .smartTyping: return ParakeetEngine.eouModelDirectory
         case .diarizer: return Diarizer.modelDirectory
+        case .vocabulary: return VocabularyBooster.modelDirectory
         case .gemma: return LLMModelManager.localURL
         case .whisper(let name):
             return ModelManager.modelsDirectory.appendingPathComponent(name, isDirectory: true)
@@ -136,6 +142,7 @@ enum ModelKind: Hashable, Identifiable, Sendable {
         case .parakeetMultilingual: return ParakeetEngine.meetingModelIsInstalled()
         case .smartTyping: return ParakeetEngine.eouIsInstalled()
         case .diarizer: return Diarizer.isInstalled()
+        case .vocabulary: return VocabularyBooster.isInstalled()
         case .gemma: return LLMModelManager.isInstalled()
         case .whisper(let name): return ModelManager.isInstalled(name)
         }
@@ -159,6 +166,8 @@ final class ModelStore: ObservableObject {
         // the download size until then.
         var bytesOnDisk: Int64?
         var download: ModelDownloadProgress?
+        // A Whisper model's first Neural Engine compile, after its download.
+        var isCompiling = false
         var failure: Failure?
     }
 
@@ -189,6 +198,16 @@ final class ModelStore: ObservableObject {
             .store(in: &observers)
         coordinator.$meetingLanguageModelProgress
             .sink { [weak self] in self?.mirror(.parakeetMultilingual, $0) }
+            .store(in: &observers)
+        coordinator.$vocabularyModelProgress
+            .sink { [weak self] in self?.mirror(.vocabulary, $0) }
+            .store(in: &observers)
+        coordinator.$compilingWhisperModel
+            .sink { [weak self] compiling in
+                for choice in ModelManager.curatedModels {
+                    self?.update(.whisper(choice.id)) { $0.isCompiling = choice.id == compiling }
+                }
+            }
             .store(in: &observers)
         refresh()
     }
@@ -273,8 +292,18 @@ final class ModelStore: ObservableObject {
             try Self.check(await coordinator.downloadEOUModel())
         case .diarizer:
             // FluidAudio's diarizer takes no progress handler, so its ~22 MB
-            // shows as an indeterminate bar.
+            // shows as an indeterminate bar, then as compiling once every file
+            // is on disk (FluidAudio moves each one into place whole).
+            let compileWatch = Task { [weak self] in
+                while !Diarizer.isInstalled() {
+                    try await Task.sleep(for: .milliseconds(500))
+                }
+                self?.advance(kind, to: ModelDownloadProgress(stage: .compiling, fraction: nil))
+            }
+            defer { compileWatch.cancel() }
             try Self.check(await coordinator.downloadDiarizationModel())
+        case .vocabulary:
+            try Self.check(await coordinator.downloadVocabularyModel())
         case .gemma:
             // Doesn't pre-load the LlamaSession - that happens lazily on first
             // summarize, so Settings doesn't wait through model-init.
@@ -295,7 +324,8 @@ final class ModelStore: ObservableObject {
                 }
             }
             // Picking a model warms the engine before its files exist, which
-            // fails quietly. Load it now, so the first dictation doesn't wait.
+            // fails quietly. Load it now, so its first compile runs here, with
+            // its row showing it, rather than when the user first dictates.
             let settings = SettingsStore.shared
             if settings.engine == .whisper, settings.modelName == name {
                 coordinator.reloadEngine()
@@ -314,6 +344,8 @@ final class ModelStore: ObservableObject {
             report(kind, coordinator.deleteEOUModel(), busy: "Release the dictation shortcut, then try again.")
         case .diarizer:
             report(kind, coordinator.deleteDiarizationModel(), busy: "Stop the meeting, then try again.")
+        case .vocabulary:
+            report(kind, coordinator.deleteVocabularyModel(), busy: "Finish dictating, then try again.")
         case .whisper(let name):
             do {
                 try ModelManager.delete(name)
@@ -323,6 +355,10 @@ final class ModelStore: ObservableObject {
         case .gemma:
             Task { await deleteGemma() }
             return
+        }
+        let folder = kind.location
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            Task.detached(priority: .utility) { CompiledModelCache.removeCopies(of: folder) }
         }
         refresh()
     }

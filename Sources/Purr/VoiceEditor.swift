@@ -97,9 +97,10 @@ final class VoiceEditor {
             // "Warming up…" until the mic delivers a buffer; startLevelTask() flips it.
             hud.show(.warmingUp)
             startLevelTask()
-            // Warm the LLM while the user speaks so a cold model load overlaps the
-            // recording window instead of stalling the edit.
-            EditInterpreter.warmUp()
+            // Warm the LLM while the user speaks so a cold model load and the
+            // prompt up to the instruction overlap the recording window instead
+            // of stalling the edit.
+            EditInterpreter.warmUp(selection: selection)
         } catch {
             isActive = false
             capturedSelection = nil
@@ -146,9 +147,17 @@ final class VoiceEditor {
             return
         }
 
-        hud.show(.transcribing)
-        state = .transcribing
         let engine = engineProvider()
+        // Same HUD step as dictation's while the model loads.
+        let needsLoad = !engine.isLoaded
+        if needsLoad {
+            hud.show(engine.loadingMode)
+        } else {
+            hud.show(.transcribing)
+        }
+        // As dictation's: a long wait leaves time to move on to another app.
+        let editedApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        state = .transcribing
         let inserter = self.inserter
         let hud = self.hud
         let log = self.log
@@ -166,13 +175,19 @@ final class VoiceEditor {
         Task { @MainActor [weak self] in
             defer { self?.state = .idle }
             do {
+                if needsLoad {
+                    try await engine.load()
+                    hud.show(.transcribing)
+                }
                 let raw = try await engine.transcribe(samples: prepared.samples)
                 // The instruction is dictated speech, so run the same deterministic
-                // post-processing (honouring its Settings toggles) before the LLM sees it.
+                // post-processing (honouring its Settings toggles) before the LLM sees it,
+                // minus voice commands: "end with a period" names the mark, so the
+                // LLM has to get the word.
                 let instruction = PostProcessor(
                     trimFillers: SettingsStore.shared.trimFillers,
                     customFillerWords: SettingsStore.shared.customFillerWords,
-                    voiceCommandsEnabled: SettingsStore.shared.voiceCommands,
+                    voiceCommandsEnabled: false,
                     customVoiceCommands: SettingsStore.shared.customVoiceCommands,
                     dictionary: SettingsStore.shared.dictionary
                 ).apply(raw).text
@@ -183,6 +198,16 @@ final class VoiceEditor {
                 }
                 let edited = try await EditInterpreter.apply(instruction: instruction, to: selection)
                 log.info("Voice edit applied → \(edited.count, privacy: .public) chars")
+                if needsLoad, NSWorkspace.shared.frontmostApplication?.processIdentifier != editedApp {
+                    // The selection is in the app that was left.
+                    log.info("Switched apps during the model wait - copying the edit instead.")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(edited, forType: .string)
+                    hud.showMessage(
+                        "You switched apps while the model loaded, so the edit is on the clipboard.",
+                        icon: .copied, autoHideAfter: 4)
+                    return
+                }
                 if !AXSelection.replaceSelection(with: edited) {
                     // AX write failed (Chrome, Electron, some apps). Pasting overwrites
                     // the selection, so the outcome matches a successful AX write.
@@ -212,7 +237,12 @@ final class VoiceEditor {
             } catch {
                 log.error(
                     "Voice edit transcription failed: \(error.localizedDescription, privacy: .public)")
-                hud.showMessage("Voice Edit failed. Try again.")
+                // Engine errors, like a model still loading, carry their own message.
+                if let mapped = HUDErrorText.message(for: error) {
+                    hud.showMessage(mapped, autoHideAfter: 4)
+                } else {
+                    hud.showMessage("Voice Edit failed. Try again.")
+                }
             }
         }
     }

@@ -26,12 +26,13 @@ final class SettingsStore: ObservableObject {
         static let onboardingStep = "onboarding.step"
         static let engine = "stt.engine"
         static let translateToEnglish = "stt.translateToEnglish"
-        static let translationSourceLanguage = "stt.translationSourceLanguage"
+        static let spokenLanguage = "stt.spokenLanguage"
         static let smartTyping = "ui.smartTyping"
         static let voiceCommands = "ui.voiceCommands"
         static let dictionary = "post.dictionary"
         static let customVoiceCommands = "post.customVoiceCommands"
         static let customFillerWords = "post.customFillerWords"
+        static let vocabularyWords = "stt.vocabularyWords"
         static let trimFillers = "post.trimFillers"
         static let summarizeMeetings = "feature.summarizeMeetings"
         static let summaryBackend = "feature.summaryBackend"
@@ -138,14 +139,15 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(translateToEnglish, forKey: Keys.translateToEnglish) }
     }
 
-    // Empty = auto-detect. Pinning skips Whisper's unreliable-on-short-clips
-    // audio detection. Consulted only when translateToEnglish is on.
-    @Published var translationSourceLanguage: String {
-        didSet { defaults.set(translationSourceLanguage, forKey: Keys.translationSourceLanguage) }
+    // The language Whisper listens for, also the source when translating.
+    // Empty = auto-detect, which misreads short clips and can write English
+    // speech in another language. The English-only models ignore it.
+    @Published var spokenLanguage: String {
+        didSet { defaults.set(spokenLanguage, forKey: Keys.spokenLanguage) }
     }
 
     // Empty string = English (Parakeet v2); otherwise a ParakeetLanguage code
-    // that routes meetings through the multilingual v3 model instead.
+    // that routes meetings through the multilingual Ultra model instead.
     @Published var meetingLanguage: String {
         didSet { defaults.set(meetingLanguage, forKey: Keys.meetingLanguage) }
     }
@@ -175,8 +177,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(summaryBackend.rawValue, forKey: Keys.summaryBackend) }
     }
 
-    @Published var voiceEditBackend: SummaryBackend {
-        didSet { defaults.set(voiceEditBackend.rawValue, forKey: Keys.voiceEditBackend) }
+    // nil until a model is picked: Gemma once it's downloaded, Apple's
+    // model until then (EditInterpreter.prefersGemma).
+    @Published var voiceEditBackend: SummaryBackend? {
+        didSet { defaults.set(voiceEditBackend?.rawValue, forKey: Keys.voiceEditBackend) }
     }
 
     // Empty = unset, resolves to `defaultMeetingsDirectory` (no TCC consent
@@ -222,6 +226,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // Names and terms dictation listens for (VocabularyBooster).
+    @Published var vocabularyWords: [VocabularyWordEntry] {
+        didSet {
+            if let data = try? JSONEncoder().encode(vocabularyWords) {
+                defaults.set(data, forKey: Keys.vocabularyWords)
+            }
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -240,7 +253,7 @@ final class SettingsStore: ObservableObject {
         let storedEngine = defaults.string(forKey: Keys.engine) ?? Engine.parakeet.rawValue
         self.engine = Engine(rawValue: storedEngine) ?? .parakeet
         self.translateToEnglish = defaults.object(forKey: Keys.translateToEnglish) as? Bool ?? false
-        self.translationSourceLanguage = defaults.string(forKey: Keys.translationSourceLanguage) ?? ""
+        self.spokenLanguage = defaults.string(forKey: Keys.spokenLanguage) ?? ""
         self.meetingLanguage = defaults.string(forKey: Keys.meetingLanguage) ?? ""
         self.smartTyping = defaults.object(forKey: Keys.smartTyping) as? Bool ?? false
         self.voiceCommands = defaults.object(forKey: Keys.voiceCommands) as? Bool ?? true
@@ -249,9 +262,7 @@ final class SettingsStore: ObservableObject {
         let storedBackend =
             defaults.string(forKey: Keys.summaryBackend) ?? SummaryBackend.appleFoundation.rawValue
         self.summaryBackend = SummaryBackend(rawValue: storedBackend) ?? .appleFoundation
-        let storedEditBackend =
-            defaults.string(forKey: Keys.voiceEditBackend) ?? SummaryBackend.appleFoundation.rawValue
-        self.voiceEditBackend = SummaryBackend(rawValue: storedEditBackend) ?? .appleFoundation
+        self.voiceEditBackend = defaults.string(forKey: Keys.voiceEditBackend).flatMap(SummaryBackend.init)
         self.meetingsFolderPath = defaults.string(forKey: Keys.meetingsFolderPath) ?? ""
         if let data = defaults.data(forKey: Keys.dictionary),
             let entries = try? JSONDecoder().decode([DictionaryEntry].self, from: data)
@@ -273,6 +284,13 @@ final class SettingsStore: ObservableObject {
             self.customFillerWords = entries
         } else {
             self.customFillerWords = []
+        }
+        if let data = defaults.data(forKey: Keys.vocabularyWords),
+            let entries = try? JSONDecoder().decode([VocabularyWordEntry].self, from: data)
+        {
+            self.vocabularyWords = entries
+        } else {
+            self.vocabularyWords = []
         }
 
         let mKey = defaults.object(forKey: Keys.meetingHotkeyKey) as? Int
@@ -327,7 +345,7 @@ final class SettingsStore: ObservableObject {
         engine = .parakeet
         modelName = ModelManager.defaultModel
         translateToEnglish = false
-        translationSourceLanguage = ""
+        spokenLanguage = ""
         meetingLanguage = ""
         autoPaste = true
         smartTyping = false
@@ -335,11 +353,12 @@ final class SettingsStore: ObservableObject {
         trimFillers = true
         summarizeMeetings = false
         summaryBackend = .appleFoundation
-        voiceEditBackend = .appleFoundation
+        voiceEditBackend = nil
         meetingsFolderPath = ""
         dictionary = []
         customVoiceCommands = []
         customFillerWords = []
+        vocabularyWords = []
     }
 
     private func persistHotkey() {
@@ -443,6 +462,12 @@ struct VoiceCommandEntry: Codable, Equatable, Identifiable, Hashable {
 // One custom filler word or phrase. Matched case-insensitively as a whole
 // word and removed during the filler-trim pass.
 struct FillerWordEntry: Codable, Equatable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var word: String
+}
+
+// One name or term dictation listens for, spelled as it should be written.
+struct VocabularyWordEntry: Codable, Equatable, Identifiable, Hashable {
     var id: UUID = UUID()
     var word: String
 }

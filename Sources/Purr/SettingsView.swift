@@ -9,6 +9,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var coordinator: AppCoordinator
     @ObservedObject var models: ModelStore
+    let updater: Updater
     @ObservedObject private var settings = SettingsStore.shared
     @State private var pane: SettingsPane? = .general
 
@@ -26,11 +27,11 @@ struct SettingsView: View {
                     .toolbar(removing: .sidebarToggle)
                 } detail: {
                     switch pane ?? .general {
-                    case .general: GeneralPane(coordinator: coordinator, models: models)
+                    case .general: GeneralPane(coordinator: coordinator, models: models, updater: updater)
                     case .engine: EnginePane(coordinator: coordinator, models: models)
                     case .meetings: MeetingsPane(coordinator: coordinator, models: models)
                     case .voiceEdit: VoiceEditPane(coordinator: coordinator, models: models)
-                    case .vocabulary: VocabularyPane()
+                    case .vocabulary: VocabularyPane(models: models)
                     case .models: ModelsPane(models: models)
                     }
                 }
@@ -81,6 +82,7 @@ private struct GeneralPane: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject var coordinator: AppCoordinator
     @ObservedObject var models: ModelStore
+    @ObservedObject var updater: Updater
     @StateObject private var permissions = PermissionsModel()
     // Read as the pane opens (setup skipped, or a switch turned off in System
     // Settings since) and kept for the visit, so each row can show Allowed.
@@ -148,6 +150,14 @@ private struct GeneralPane: View {
                     .help("Drops “um”, “uh” and the filler words you add in Vocabulary.")
                 Toggle("Voice commands", isOn: $settings.voiceCommands)
                     .help("Say “new line”, “comma” or “scratch that”, plus your own commands from Vocabulary.")
+            }
+
+            Section("Updates") {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(get: { updater.checksAutomatically }, set: updater.setChecksAutomatically)
+                )
+                .help("Checks GitHub once a day and shows what's new before anything installs.")
             }
 
             Section {
@@ -303,7 +313,18 @@ private struct EnginePane: View {
             }
 
             if settings.engine == .whisper {
-                Section("Translation") {
+                Section("Language") {
+                    if ModelManager.isMultilingual(settings.modelName) {
+                        LanguageRow(
+                            title: "Spoken language",
+                            value: WhisperLanguage.named(settings.spokenLanguage).name
+                        ) { pickingLanguage = true }
+                        .help(
+                            "Auto-detect can misread short clips, or write English in another language. Pick yours for reliable results."
+                        )
+                    } else {
+                        LabeledContent("Spoken language", value: "English")
+                    }
                     Toggle(isOn: $settings.translateToEnglish) {
                         Text("Translate to English")
                         if !selectedModelSupportsTranslation {
@@ -312,13 +333,6 @@ private struct EnginePane: View {
                     }
                     .disabled(!selectedModelSupportsTranslation)
                     .help("Speak any language; Whisper writes the transcript in English.")
-                    if selectedModelSupportsTranslation, settings.translateToEnglish {
-                        LanguageRow(
-                            title: "Spoken language",
-                            value: WhisperLanguage.named(settings.translationSourceLanguage).name
-                        ) { pickingLanguage = true }
-                        .help("Auto-detect can misread short clips. Pick the language for reliable results.")
-                    }
                 }
             }
         }
@@ -326,7 +340,7 @@ private struct EnginePane: View {
         .sheet(isPresented: $pickingLanguage) {
             LanguagePickerSheet(
                 title: "Spoken Language",
-                selection: $settings.translationSourceLanguage,
+                selection: $settings.spokenLanguage,
                 allLanguages: WhisperLanguage.all,
                 matching: WhisperLanguage.matching,
                 onClose: { pickingLanguage = false }
@@ -413,7 +427,7 @@ private struct MeetingsPane: View {
                 LanguageRow(title: "Language", value: ParakeetLanguage.named(settings.meetingLanguage).name) {
                     pickingLanguage = true
                 }
-                .help("English uses Parakeet v2. Other languages use the multilingual Parakeet v3.")
+                .help("English uses Parakeet v2. Other languages use the multilingual Parakeet Ultra.")
                 if !settings.meetingLanguage.isEmpty, models[.parakeetMultilingual].needsAttention {
                     ModelRow(kind: .parakeetMultilingual, models: models)
                         .help("Needed for this language. Downloads on your next meeting if you skip it.")
@@ -581,11 +595,13 @@ private struct VoiceEditPane: View {
                     )
                 }
                 if models.appleIntelligenceAvailable {
-                    Picker("Model", selection: $settings.voiceEditBackend) {
+                    Picker("Model", selection: backend) {
                         Text("Apple Intelligence").tag(SettingsStore.SummaryBackend.appleFoundation)
                         Text(ModelKind.gemma.title).tag(SettingsStore.SummaryBackend.llamaCpp)
                     }
-                    .help("Apple's model is built into macOS. Gemma is a 3.35 GB download that covers more languages.")
+                    .help(
+                        "Apple's model is built into macOS. Gemma is a 3.35 GB download that gets more edits right and covers more languages. Once it's downloaded, edits use it unless you pick Apple Intelligence."
+                    )
                 } else {
                     LabeledContent("Model", value: modelName)
                         .help("Edits are understood by an AI model running on this Mac.")
@@ -609,8 +625,16 @@ private struct VoiceEditPane: View {
         models[.gemma].isOnDisk ? ModelKind.gemma.title : "None"
     }
 
+    // The model edits use: the one picked here, else Gemma once it's
+    // downloaded, as EditInterpreter decides. Picking one keeps it.
+    private var backend: Binding<SettingsStore.SummaryBackend> {
+        Binding(
+            get: { settings.voiceEditBackend ?? (models[.gemma].isOnDisk ? .llamaCpp : .appleFoundation) },
+            set: { settings.voiceEditBackend = $0 })
+    }
+
     private var showsGemmaDownload: Bool {
-        (!models.appleIntelligenceAvailable || settings.voiceEditBackend == .llamaCpp)
+        (!models.appleIntelligenceAvailable || backend.wrappedValue == .llamaCpp)
             && models[.gemma].needsAttention
     }
 }
@@ -621,9 +645,35 @@ private struct VoiceEditPane: View {
 
 private struct VocabularyPane: View {
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject var models: ModelStore
 
     var body: some View {
         Form {
+            Section {
+                if models[.vocabulary].needsAttention {
+                    ModelRow(kind: .vocabulary, models: models, showsPurpose: true)
+                }
+                ForEach($settings.vocabularyWords) { $entry in
+                    HStack {
+                        TextField("Word", text: $entry.word, prompt: Text("Name or term"))
+                            .labelsHidden()
+                        RemoveButton {
+                            settings.vocabularyWords.removeAll { $0.id == entry.id }
+                        }
+                    }
+                }
+                AddButton("Add Word") {
+                    settings.vocabularyWords.append(VocabularyWordEntry(word: ""))
+                }
+                .help("Names and terms to listen for, spelled the way you write them. Three letters or more.")
+            } header: {
+                Text("Words")
+            } footer: {
+                if settings.engine != .parakeet {
+                    Text("Words need the Parakeet engine.")
+                }
+            }
+
             Section("Replacements") {
                 ForEach($settings.dictionary) { $entry in
                     PairRow(from: $entry.from, to: $entry.to, fromPrompt: "Heard as", toPrompt: "Write as") {
@@ -759,7 +809,7 @@ private struct ModelsPane: View {
             }
 
             Section("Models") {
-                ForEach([ModelKind.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .gemma]) { kind in
+                ForEach([ModelKind.parakeet, .smartTyping, .parakeetMultilingual, .diarizer, .vocabulary, .gemma]) { kind in
                     ModelRow(kind: kind, models: models, showsPurpose: true)
                 }
             }
@@ -834,16 +884,21 @@ private struct ModelsPane: View {
 // ----------------------------------------------------------------------
 
 extension ModelStore.Status {
-    // Worth a row in a feature's own pane: missing or downloading. The
-    // Models pane lists every model either way.
-    var needsAttention: Bool { !isOnDisk || download != nil }
+    // A download, or Whisper's first compile after one.
+    var progress: ModelDownloadProgress? {
+        download ?? (isCompiling ? ModelDownloadProgress(stage: .compiling, fraction: nil) : nil)
+    }
+
+    // Worth a row in a feature's own pane: missing, downloading or compiling.
+    // The Models pane lists every model either way.
+    var needsAttention: Bool { !isOnDisk || progress != nil }
 }
 
 extension ModelDownloadProgress {
     var label: String {
         switch stage {
         case .downloading:
-            guard let fraction else { return "Downloading…" }
+            guard let fraction else { return "Downloading model" }
             return fraction.formatted(.percent.precision(.fractionLength(0)))
         case .compiling: return "Optimizing…"
         case .verifying: return "Verifying…"
@@ -885,7 +940,7 @@ struct ModelRow: View {
                 Spacer(minLength: 8)
                 trailing(status)
             }
-            if let progress = status.download {
+            if let progress = status.progress {
                 ProgressView(value: progress.fraction)
                     .progressViewStyle(.linear)
                     .controlSize(.small)
@@ -911,7 +966,7 @@ struct ModelRow: View {
 
     @ViewBuilder
     private func trailing(_ status: ModelStore.Status) -> some View {
-        if let progress = status.download {
+        if let progress = status.progress {
             Text(progress.label)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
