@@ -1,13 +1,14 @@
 # Changelog
 
-## 0.0.2 - Unreleased
+## 0.0.2 - 2026-11-03
 
 - Dictation with Parakeet (English) or Whisper (about 100 languages), typed into any app.
 - Smart Typing, which types as you speak.
 - Meeting notes from your mic and system audio, with speaker labels, in English and 27 more languages.
 - Meeting summaries in the meeting's language, with Apple Intelligence or Gemma 4 E2B.
 - Voice Edit, which rewrites selected text from a spoken instruction.
-- Voice commands, filler trimming and a custom vocabulary.
+- Voice commands and filler trimming.
+- A vocabulary that listens for the names and terms you add and fixes words it keeps mishearing.
 - Meeting audio saved next to the notes, if you want it.
 - Updates with release notes, checked once a day if you allow it.
 - Uninstall from Settings > General.
