@@ -4,10 +4,10 @@
 
 Only the latest release gets security fixes. Click **Check for Updates** in the menu bar to make sure you're on it before reporting.
 
-| Version | Supported |
-| --- | --- |
-| Latest release | Yes |
-| Older releases | No |
+|    Version     | Supported |
+| :------------: | :-------: |
+| Latest release |    Yes    |
+| Older releases |     No    |
 
 ## Reporting a Vulnerability
 
