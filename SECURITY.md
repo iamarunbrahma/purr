@@ -17,9 +17,9 @@ Include your Purr version (menu bar > About Purr), your macOS version, the steps
 
 ## What to Expect
 
-- A reply within 3 working days.
-- Word on whether I could reproduce it and how I plan to fix it.
-- Once the fix ships, an advisory that credits you, unless you'd rather stay anonymous.
+I'll reply within 3 working days and tell you whether I could reproduce the problem and how I plan to fix it. If I confirm and fix it, the advisory credits you, unless you'd rather stay anonymous.
+
+There's no bug bounty. Reports that are only scanner output, with no steps that show a real problem, will be closed.
 
 Purr is maintained by one person, so please give me a reasonable chance to ship a fix before you share details publicly.
 
