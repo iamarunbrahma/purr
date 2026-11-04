@@ -39,19 +39,6 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
   <img src="Resources/screenshots/settings-models.png" width="49%" alt="Models settings">
 </p>
 
-## Benchmarks
-
-Purr, Wispr Flow (free plan, runs in the cloud) and Superwhisper (free plan, runs on the Mac) heard the same recordings in their dictation mode, played into each app as its microphone. Lower numbers are better for latency and WER, and higher for names spelled right.
-
-| | Purr | Wispr Flow | Superwhisper |
-|---|---|---|---|
-| Latency (key release to text) | **0.22 s** | 0.63 s | 1.30 s |
-| Word error rate (WER), everyday speech | 3.8% | **3.4%** | 9.0% |
-| WER, hard audio (noise, accents, quiet speech) | **4.0%** | **4.0%** | 10.0% |
-| WER, in non-English languages | 7.1% | **5.8%** | 12.1% |
-| Names and terms spelled right (same list in each app) | 72.6% | **93.5%** | 51.6% |
-| Works offline | **yes** | no | **yes** |
-
 ## Install
 
 Download `Purr.dmg` from the [latest release](https://github.com/iamarunbrahma/purr/releases/latest), open it and drag Purr into Applications.
