@@ -28,7 +28,7 @@ let package = Package(
         // Sparkle - checks for updates, shows each release's notes, and
         // installs and relaunches. Pinned exactly so the framework Makefile
         // signs is the one that was tested.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         // llama.cpp Apple XCFramework - runs Gemma 4 E2B for meeting summaries
