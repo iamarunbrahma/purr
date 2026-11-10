@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/78a4fbca-b187-4965-b801-5f5d4ee1b128
 
 - **Dictate** into any text field. Hold a key, talk, let go.
 - **Smart Typing** types as you speak instead of waiting for you to let go.
-- **Meetings** is a private AI notetaker that records your mic and the call with no bot joining, labels who said what, and saves Markdown notes with an optional summary.
+- **Meetings** is a private AI notetaker that records your mic and your Mac's audio with no bot joining the call, labels who said what, and saves Markdown notes with an optional summary.
 - **Voice Edit** rewrites selected text when you say what to change.
 - **Languages**: English by default, about 100 for dictation with Whisper, and 28 for meetings.
 - **Voice commands** for punctuation, new lines and "scratch that", plus your own.
