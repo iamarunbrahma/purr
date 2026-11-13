@@ -69,7 +69,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - id: review
-        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
+        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
         with:
           # Runs on the maintainer's Claude plan, not API credits. The token
           # (from `claude setup-token`) is in the action's environment, which
