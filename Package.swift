@@ -24,7 +24,7 @@ let package = Package(
         // TTS and the NeMo text normalizer, a ~9 MB Rust library, neither of
         // which Purr uses.
         .package(
-            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.0", traits: ["Diarizer"]),
+            url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.2", traits: ["Diarizer"]),
         // Sparkle - checks for updates, shows each release's notes, and
         // installs and relaunches. Pinned exactly so the framework Makefile
         // signs is the one that was tested.
