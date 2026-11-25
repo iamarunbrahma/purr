@@ -57,6 +57,8 @@ open /Applications/Purr.app
 
 On first launch, a short setup picks the speech engine, downloads its model (about 450 MB for Parakeet) and asks for Microphone and Accessibility access. Then click into any text field, hold **Right Option**, speak and let go.
 
+Full guide: [How to use Purr](https://purr.arunbrahma.com/how-to-use-purr).
+
 ## Hot Keys
 
 | Mode       | Default      | Behavior                                           |
