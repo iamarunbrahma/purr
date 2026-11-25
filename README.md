@@ -11,6 +11,8 @@ Dictation, meeting notes and voice editing that run entirely on your Mac.
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#requirements)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-orange)](#requirements)
 
+[![As seen on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to)
+
 </div>
 
 ## Video Demo
